@@ -13,6 +13,7 @@ GEM
     diff-lcs (1.6.2)
     docile (1.4.1)
     erb (6.0.2)
+    ice_age (0.2.0)
     io-console (0.8.2)
     irb (1.17.0)
       pp (>= 0.6.0)
@@ -62,6 +63,7 @@ PLATFORMS
 
 DEPENDENCIES
   debug (>= 1)
+  ice_age (>= 0.2)
   rspec (>= 3.10)
   rspec-debugging
   simplecov (>= 0.22)
@@ -73,6 +75,7 @@ CHECKSUMS
   diff-lcs (1.6.2) sha256=9ae0d2cba7d4df3075fe8cd8602a8604993efc0dfa934cff568969efb1909962
   docile (1.4.1) sha256=96159be799bfa73cdb721b840e9802126e4e03dfc26863db73647204c727f21e
   erb (6.0.2) sha256=9fe6264d44f79422c87490a1558479bd0e7dad4dd0e317656e67ea3077b5242b
+  ice_age (0.2.0) sha256=2cfd333ac6791d2e8abaf3060afd0c88c57868beca40d0d9579b7c5534bbbb73
   io-console (0.8.2) sha256=d6e3ae7a7cc7574f4b8893b4fca2162e57a825b223a177b7afa236c5ef9814cc
   irb (1.17.0) sha256=168c4ddb93d8a361a045c41d92b2952c7a118fa73f23fe14e55609eb7a863aae
   pp (0.6.3) sha256=2951d514450b93ccfeb1df7d021cae0da16e0a7f95ee1e2273719669d0ab9df6

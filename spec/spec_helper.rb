@@ -1,4 +1,5 @@
 require "debug"
+require "ice_age"
 require "rspec"
 require "rspec/debugging"
 require "simplecov"
@@ -23,13 +24,8 @@ RSpec.configure do |config|
     mocks.verify_partial_doubles = true
   end
 
-  # Reset TZ to UTC for all tests by default.
-  config.around(:each) do |example|
-    old_tz = ENV['TZ']
+  config.before(:each) do
     ENV['TZ'] = 'UTC'
-    example.run
-  ensure
-    ENV['TZ'] = old_tz
   end
 end
 
