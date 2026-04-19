@@ -17,12 +17,19 @@ gem_name = Dir.glob("*.gemspec")[0].split(".")[0]
 require gem_name
 
 RSpec.configure do |config|
-  # allow "fit" examples
   config.filter_run_when_matching :focus
 
   config.mock_with :rspec do |mocks|
-    # verify existence of stubbed methods
     mocks.verify_partial_doubles = true
+  end
+
+  # Reset TZ to UTC for all tests by default.
+  config.around(:each) do |example|
+    old_tz = ENV['TZ']
+    ENV['TZ'] = 'UTC'
+    example.run
+  ensure
+    ENV['TZ'] = old_tz
   end
 end
 

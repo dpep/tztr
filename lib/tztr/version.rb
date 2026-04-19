@@ -1,3 +1,5 @@
-module TimezoneTranslator
-  VERSION = Gem.loaded_specs["tztr"].version.to_s
+# frozen_string_literal: true
+
+module Tztr
+  VERSION = "0.0.0"
 end
