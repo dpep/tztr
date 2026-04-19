@@ -10,6 +10,14 @@ Reads from stdin or file, auto-detects timestamp formats, and preserves the orig
 
 ## Install
 
+With Homebrew:
+
+```bash
+brew install dpep/tools/tztr
+```
+
+With RubyGems:
+
 ```bash
 gem install tztr
 ```
