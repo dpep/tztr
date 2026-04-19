@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'optparse'
+
+$LOAD_PATH.unshift File.expand_path('../lib', __dir__)
+require 'tztr'
+
+local_tz = ENV['TZ']
+
+options = {
+  from: nil,
+  to: local_tz || 'UTC',
+  format: nil
+}
+
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: tztr [options] [file]"
+  opts.separator ""
+  opts.separator "Timezone Translator - convert timestamps timezone. Reads from stdin or file."
+  opts.separator ""
+
+  opts.on("-f", "--from TZ", "Input timezone (default: auto-detect)") { |v| options[:from] = v }
+  opts.on("-t", "--to TZ", "Output timezone (default: UTC)") { |v| options[:to] = v }
+  opts.on("-l", "--list", "List timezone aliases") { Tztr::TIMEZONE_ALIASES.sort.each { |k, v| puts "%-12s %s" % [k, v] }; exit }
+  opts.on("-i", "--in-place", "Edit file in place") { options[:inplace] = true }
+  opts.on("-F", "--format FMT", %i[iso short time], "Output format: iso, short, time (default: preserve input)") { |v| options[:format] = v }
+  opts.on("-v", "--version", "Show version") { puts Tztr::VERSION; exit }
+  opts.on("-h", "--help", "Show this help") { puts opts; exit }
+
+  opts.separator ""
+  opts.separator "Environment:"
+  opts.separator "  TZ    Sets default output timezone (overridden by -t)"
+  opts.separator ""
+  opts.separator "Examples:"
+  opts.separator "  echo '2026-04-03T12:00:00Z' | tztr -t sf"
+  opts.separator "  echo '15:30 UTC' | tztr -t pst"
+  opts.separator "  echo '12:00 EST' | tztr -t -8"
+  opts.separator "  tail -f app.log | tztr -t nyc"
+end
+parser.parse!
+
+options[:to] = Tztr.resolve_tz(options[:to])
+options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
+ENV['TZ'] = options[:to]
+
+$stdout.sync = true
+
+if ARGV.empty? && $stdin.tty?
+  puts parser
+  exit
+end
+
+if options[:inplace]
+  abort "#{parser.program_name}: -i requires a file argument" if ARGV.empty?
+
+  ARGV.each do |file|
+    content = File.read(file)
+    translated = content.each_line.map do |line|
+      Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format])
+    end.join
+    File.write(file, translated) if translated != content
+  end
+else
+  inputs = ARGV.empty? ? [$stdin] : ARGV.map { |f| File.open(f) }
+  inputs.each do |input|
+    input.each_line do |line|
+      print Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format])
+    end
+  end
+end
