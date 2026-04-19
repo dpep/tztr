@@ -2,10 +2,10 @@ Gem::Specification.new do |s|
   s.authors     = ["Daniel Pepper"]
   s.description = "..."
   s.files       = `git ls-files * ':!:spec'`.split("\n")
-  s.homepage    = "https://github.com/dpep/MY_NEW_REPO"
+  s.homepage    = "https://github.com/dpep/tztr"
   s.license     = "MIT"
   s.name        = File.basename(__FILE__, ".gemspec")
-  s.summary     = "MY_NEW_GEM"
+  s.summary     = "TimezoneTranslator"
   s.version     = "0.0.0"
 
   s.required_ruby_version = ">= 3.2"
