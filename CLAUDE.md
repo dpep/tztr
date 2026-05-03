@@ -1,0 +1,44 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+`tztr` is a small Ruby gem (CLI + library) that translates timestamps between timezones. It auto-detects timestamp formats in arbitrary text, converts them, and preserves the surrounding text and original format by default.
+
+- Library entry point: `lib/tztr.rb` (single file, `Tztr` module)
+- Executable: `bin/tztr` (uses OptionParser, streams stdin/files line-by-line)
+- Required Ruby: `>= 3.2`. CI runs against 3.3, 3.4, and 4.0.
+
+## Commands
+
+```bash
+bundle install                 # install deps
+bundle exec rspec              # run all tests
+bundle exec rspec spec/tztr_spec.rb:42   # run a single test by line number
+bin/tztr ...                   # run the CLI from a working copy (no install needed)
+gem build tztr.gemspec         # build the gem
+```
+
+There is no Rubocop / linter configured — only RSpec + SimpleCov. `--require spec_helper` is set in `.rspec`, so specs don't need to require it explicitly.
+
+## Architecture notes
+
+A few things that aren't obvious from a quick read:
+
+**`Tztr.translate` mutates `ENV['TZ']`.** Both `translate` and `parse` set `ENV['TZ']` as a side effect to coerce Ruby's `Time` parsing into the right zone. The spec helper resets `ENV['TZ'] = 'UTC'` in a `before(:each)` to keep tests isolated — anything new that exercises parsing should rely on that, or save/restore `TZ` itself.
+
+**Pattern matching is ordered and first-match-wins.** `PATTERNS` in `lib/tztr.rb` is iterated top-to-bottom; the first regex that matches the line is the *only* one used (`break result` after `gsub!`). More specific patterns (ISO with timezone) must come before less specific ones (bare time). When adding a new format, place it carefully and add tests covering ambiguous lines.
+
+**Timezone resolution has three layers** (`Tztr.resolve_tz`):
+1. Numeric offset string (e.g. `"-7"`) → `Etc/GMT±N` — note the POSIX sign inversion (`-7` becomes `Etc/GMT+7`).
+2. Lowercased + underscored lookup in `TIMEZONE_ALIASES` (covers tz abbreviations like `pst`, plus city nicknames like `sf`, `nyc`).
+3. Pass-through — assumed to be a valid IANA name like `America/Los_Angeles`.
+
+**Output format preservation** (`format_time`) inspects the *original* matched substring and rebuilds the output to mirror it (ISO `T`, space-separated, time-only, with/without fractional seconds). Explicit `--format iso|short|time` short-circuits this.
+
+**CLI streaming.** `bin/tztr` sets `$stdout.sync = true` and processes input line-by-line so it works with `tail -f`. `-i/--in-place` reads, translates, and writes back only if content changed.
+
+## Release / distribution
+
+Distributed via RubyGems (`gem install tztr`) and Homebrew (`brew install dpep/tools/tztr`). Version lives in `lib/tztr/version.rb`. Dependabot auto-approves and auto-merges minor/patch dependency PRs (see `.github/workflows/dependabot.yml`).
