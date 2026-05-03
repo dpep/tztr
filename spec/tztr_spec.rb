@@ -63,9 +63,19 @@ RSpec.describe Tztr do
       expect(result).to eq("from 08:30 PDT to 09:45 PDT")
     end
 
-    it "formats as short" do
+    it "formats as short with abbreviation when not local" do
       expect(Tztr.translate("2026-04-03T12:00:00Z", to: "America/Los_Angeles", format: :short))
+        .to eq("2026-04-03 05:00 PDT")
+    end
+
+    it "formats as short without zone when local" do
+      expect(Tztr.translate("2026-04-03T12:00:00Z", to: "America/Los_Angeles", format: :short, local: true))
         .to eq("2026-04-03 05:00")
+    end
+
+    it "formats as short with UTC label when target is UTC" do
+      expect(Tztr.translate("2026-04-03T12:00:00Z", to: "UTC", format: :short))
+        .to eq("2026-04-03 12:00 UTC")
     end
 
     it "formats as time" do
@@ -73,9 +83,14 @@ RSpec.describe Tztr do
         .to eq("05:00:00")
     end
 
-    it "formats as iso" do
+    it "formats as iso with offset" do
       expect(Tztr.translate("2026-04-03T12:00:00Z", to: "America/Los_Angeles", format: :iso))
-        .to eq("2026-04-03 05:00:00")
+        .to eq("2026-04-03 05:00:00-07:00")
+    end
+
+    it "formats as iso with Z for UTC" do
+      expect(Tztr.translate("2026-04-03T12:00:00Z", to: "UTC", format: :iso))
+        .to eq("2026-04-03 12:00:00Z")
     end
 
     it "applies from timezone to naive timestamps" do

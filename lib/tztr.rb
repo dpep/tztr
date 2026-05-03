@@ -86,7 +86,7 @@ module Tztr
     TIMEZONE_ALIASES[input.downcase.tr(' ', '_')] || input
   end
 
-  def translate(line, to: 'UTC', from: nil, format: nil)
+  def translate(line, to: 'UTC', from: nil, format: nil, local: false)
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
@@ -98,7 +98,7 @@ module Tztr
       result.gsub!(pattern) do |match|
         begin
           time = parse(match, from:, to:)
-          format_time(time.localtime, format, match)
+          format_time(time.localtime, format, match, local:)
         rescue ArgumentError
           match
         end
@@ -128,15 +128,20 @@ module Tztr
     str.match?(/Z$|[+-]\d{2}:?\d{2}$| ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})$/)
   end
 
-  def format_time(time, fmt, original)
+  def format_time(time, fmt, original, local: false)
+    tz = time.utc_offset == 0 ? 'Z' : time.strftime('%:z')
+
     case fmt
-    when :short then return time.strftime('%Y-%m-%d %H:%M')
     when :time then return time.strftime('%H:%M:%S')
-    when :iso then return time.strftime('%Y-%m-%d %H:%M:%S')
+    when :iso then return time.strftime('%Y-%m-%d %H:%M:%S') + tz
+    when :short
+      base = time.strftime('%Y-%m-%d %H:%M')
+      return base if local
+
+      return base + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     end
 
     # Preserve input format
-    tz = time.utc_offset == 0 ? 'Z' : time.strftime('%:z')
 
     case original
     when /^\d{4}-\d{2}-\d{2}T/

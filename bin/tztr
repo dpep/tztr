@@ -21,7 +21,7 @@ parser = OptionParser.new do |opts|
   opts.separator ""
 
   opts.on("-f", "--from TZ", "Input timezone (default: auto-detect)") { |v| options[:from] = v }
-  opts.on("-t", "--to TZ", "Output timezone (default: UTC)") { |v| options[:to] = v }
+  opts.on("-t", "--to TZ", "Output timezone (default: $TZ, else UTC)") { |v| options[:to] = v }
   opts.on("-l", "--list", "List timezone aliases") { Tztr::TIMEZONE_ALIASES.sort.each { |k, v| puts "%-12s %s" % [k, v] }; exit }
   opts.on("-i", "--in-place", "Edit file in place") { options[:inplace] = true }
   opts.on("-F", "--format FMT", %i[iso short time], "Output format: iso, short, time (default: preserve input)") { |v| options[:format] = v }
@@ -42,6 +42,7 @@ parser.parse!
 
 options[:to] = Tztr.resolve_tz(options[:to])
 options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
+options[:local] = options[:to] == Tztr.resolve_tz(local_tz || 'UTC')
 ENV['TZ'] = options[:to]
 
 $stdout.sync = true
@@ -57,7 +58,7 @@ if options[:inplace]
   ARGV.each do |file|
     content = File.read(file)
     translated = content.each_line.map do |line|
-      Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format])
+      Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local])
     end.join
     File.write(file, translated) if translated != content
   end
@@ -65,7 +66,7 @@ else
   inputs = ARGV.empty? ? [$stdin] : ARGV.map { |f| File.open(f) }
   inputs.each do |input|
     input.each_line do |line|
-      print Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format])
+      print Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local])
     end
   end
 end
