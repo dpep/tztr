@@ -7,7 +7,7 @@ Gem::Specification.new do |s|
   s.files       = `git ls-files * ':!:spec'`.split("\n")
   s.homepage    = "https://github.com/dpep/tztr"
   s.license     = "MIT"
-  s.name        = File.basename(__FILE__, ".gemspec")
+  s.name        = "tztr"
   s.summary     = "Timezone Translator"
   s.version     = Tztr::VERSION
 
