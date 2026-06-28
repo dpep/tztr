@@ -39,6 +39,8 @@ A few things that aren't obvious from a quick read:
 
 **CLI streaming.** `bin/tztr` sets `$stdout.sync = true` and processes input line-by-line so it works with `tail -f`. `-i/--in-place` reads, translates, and writes back only if content changed.
 
+**Structured output is agent-facing.** `-j/--json` (array) and `-J/--ndjson` (one object per line, streaming-friendly) emit `{original, detected_format, detected_tz, translated}` per match, backed by `Tztr.matches`. `--detect` reports format/zone only (omits `translated`). **Directive: every new CLI option must work in `-j`/`-J` modes** — when adding a flag, make sure it composes with structured output (e.g. `-F` shapes the `translated` field) and add a spec covering it. `-i` is the one exception: it's mutually exclusive with `-j`/`-J`/`--detect` and aborts.
+
 ## Release / distribution
 
 Distributed via RubyGems (`gem install tztr`) and Homebrew (`brew install dpep/tools/tztr`). Version lives in `lib/tztr/version.rb`. Dependabot auto-approves and auto-merges minor/patch dependency PRs (see `.github/workflows/dependabot.yml`).

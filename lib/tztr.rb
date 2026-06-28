@@ -86,7 +86,7 @@ module Tztr
     TIMEZONE_ALIASES[input.downcase.tr(' ', '_')] || input
   end
 
-  def translate(line, to: 'UTC', from: nil, format: nil, local: false)
+  def translate(line, to: 'UTC', from: nil, format: nil, local: false, date: nil)
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
@@ -96,12 +96,7 @@ module Tztr
       next unless result.match?(pattern)
 
       result.gsub!(pattern) do |match|
-        begin
-          time = parse(match, from:, to:)
-          format_time(time.localtime, format, match, local:)
-        rescue ArgumentError
-          match
-        end
+        convert_match(match, from:, to:, format:, local:, date:) || match
       end
 
       break result
@@ -110,7 +105,60 @@ module Tztr
     result
   end
 
-  def parse(str, from: nil, to: 'UTC')
+  # Per-match structured analysis of a line. Returns an array of hashes, one
+  # per detected timestamp: { original:, detected_format:, detected_tz:,
+  # translated: }. With detect: true, translation is skipped and :translated is
+  # omitted.
+  def matches(line, to: 'UTC', from: nil, format: nil, local: false, detect: false, date: nil)
+    to = resolve_tz(to)
+    from = resolve_tz(from)
+    ENV['TZ'] = to
+    results = []
+
+    PATTERNS.each do |pattern|
+      next unless line.match?(pattern)
+
+      line.scan(pattern) do |match|
+        info = {
+          original: match,
+          detected_format: detect_format(match),
+          detected_tz: detect_zone(match),
+        }
+        info[:translated] = convert_match(match, from:, to:, format:, local:, date:) unless detect
+        results << info
+      end
+
+      break
+    end
+
+    results
+  end
+
+  def convert_match(match, from:, to:, format:, local:, date: nil)
+    time = parse(match, from:, to:, date:)
+    format_time(time.localtime, format, match, local:)
+  rescue ArgumentError
+    nil
+  end
+
+  def detect_format(str)
+    case str
+    when /\A\d{4}-\d{2}-\d{2}T/ then 'iso'
+    when /\A\d{4}-\d{2}-\d{2} / then 'datetime'
+    else 'time'
+    end
+  end
+
+  def detect_zone(str)
+    m = str.match(/\s?(Z|[+-]\d{2}:?\d{2}|UTC|GMT|[A-Z]{2,4})\z/)
+    m && m[1]
+  end
+
+  def parse(str, from: nil, to: 'UTC', date: nil)
+    # Time-only inputs carry no date, so DST can't be resolved correctly. A
+    # reference date supplies the missing context (see README caveat).
+    str = "#{date} #{str}" if date && time_only?(str)
+
     if has_timezone?(str)
       Time.parse(str)
     elsif from
@@ -126,6 +174,10 @@ module Tztr
 
   def has_timezone?(str)
     str.match?(/Z$|[+-]\d{2}:?\d{2}$| ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})$/)
+  end
+
+  def time_only?(str)
+    str.match?(/\A\d{1,2}:/)
   end
 
   def format_time(time, fmt, original, local: false)
