@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Pre-push gate: Ruby specs, the Rust gate (fmt + clippy + test), and the
+# Ruby <-> Rust CLI parity harness. Enable with `make hooks`.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "==> rspec"
+bundle exec rspec
+
+echo "==> rust gate (fmt + clippy + test)"
+make check
+
+echo "==> parity"
+make parity

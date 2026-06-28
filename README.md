@@ -10,7 +10,7 @@ Reads from stdin or file, auto-detects timestamp formats, and preserves the orig
 
 ## Install
 
-With Homebrew:
+With Homebrew (installs the Rust binary):
 
 ```bash
 brew install dpep/tools/tztr
@@ -21,6 +21,17 @@ With RubyGems:
 ```bash
 gem install tztr
 ```
+
+With Cargo:
+
+```bash
+cargo install tztr
+```
+
+> `tztr` ships two implementations kept functionally identical: the Ruby gem
+> (reference, at the repo root) and a [Rust crate](rust/tztr) (`cargo install`
+> / Homebrew). They share the same CLI, output, and behavior — see
+> [`rust/REPORT.md`](rust/REPORT.md) for port notes and a perf comparison.
 
 
 ## Usage

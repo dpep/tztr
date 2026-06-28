@@ -4,11 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`tztr` is a small Ruby gem (CLI + library) that translates timestamps between timezones. It auto-detects timestamp formats in arbitrary text, converts them, and preserves the surrounding text and original format by default.
+`tztr` is a small CLI + library that translates timestamps between timezones. It auto-detects timestamp formats in arbitrary text, converts them, and preserves the surrounding text and original format by default.
 
 - Library entry point: `lib/tztr.rb` (single file, `Tztr` module)
 - Executable: `bin/tztr` (uses OptionParser, streams stdin/files line-by-line)
 - Required Ruby: `>= 3.2`. CI runs against 3.3, 3.4, and 4.0.
+
+## Dual implementation — Ruby (reference) + Rust (port)
+
+This repo ships **two implementations kept functionally identical**: the Ruby
+gem at the root (`lib/`, `bin/`) and a Rust crate under `rust/` (`cargo install
+tztr`; Homebrew installs the Rust binary). Ruby is the **reference**; Rust
+mirrors it.
+
+**Parity is the contract.** Any behavior change must land in *both* and keep the
+CLI outputs identical:
+1. Change Ruby (`lib/tztr.rb` / `bin/tztr`), add/adjust specs, `bundle exec rspec`.
+2. Port the change to Rust under `rust/tztr/`, add/adjust tests, `make check`
+   (`cargo fmt --check` + clippy `-D warnings` + `cargo test`).
+3. `make parity` (or `ruby script/parity.rb`) — the Ruby ↔ Rust CLI parity
+   harness diffs both binaries across a matrix of inputs/args/`TZ`; JSON modes
+   compared semantically, everything else byte-for-byte. Must be 100%.
+
+CI (`.github/workflows/rust.yml`) runs the Rust gate + parity; `make hooks`
+installs a pre-push hook that runs rspec + `make check` + `make parity`.
+Timezone math in Rust uses `jiff` (system tzdb, same source as Ruby's `Time`),
+so DST matches. Watch the replicated `Time.parse` quirks documented in
+`rust/REPORT.md` (unrecognized abbreviations ignored; `from` bypassed when an
+embedded zone is present).
 
 ## Commands
 

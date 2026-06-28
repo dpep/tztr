@@ -1,0 +1,65 @@
+name: Rust
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Rust stable
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      # Tests run first so a lint nit never hides a real failure.
+      - name: build
+        run: cargo build --workspace
+        if: always()
+
+      - name: test
+        run: cargo test --workspace
+        if: always()
+
+      - name: fmt
+        run: cargo fmt --check
+        if: always()
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        if: always()
+
+  parity:
+    runs-on: ubuntu-latest
+    name: Ruby ↔ Rust parity
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: build Rust binary (release)
+        run: cargo build --release --manifest-path rust/Cargo.toml
+
+      - name: CLI parity
+        run: ruby script/parity.rb

@@ -1,0 +1,25 @@
+[package]
+name = "tztr"
+version = "0.1.0"
+edition = "2021"
+description = "Convert timestamps between timezones. Reads from stdin or file, auto-detects timestamp formats, and preserves the original format by default."
+license = "MIT"
+repository = "https://github.com/dpep/tztr"
+homepage = "https://github.com/dpep/tztr"
+documentation = "https://docs.rs/tztr"
+readme = "README.md"
+keywords = ["timezone", "timestamp", "time", "cli", "convert"]
+categories = ["command-line-utilities", "date-and-time"]
+authors = ["Daniel Pepper"]
+
+# One crate ships both the library (src/lib.rs) and the `tztr` CLI
+# (src/main.rs) — the idiomatic Rust shape (cf. ripgrep). `cargo install tztr`
+# builds the binary; `tztr = "0.x"` pulls the library.
+[[bin]]
+name = "tztr"
+path = "src/main.rs"
+
+[dependencies]
+jiff = "0.2"
+regex = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
