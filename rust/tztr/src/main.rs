@@ -1,7 +1,8 @@
 //! `tztr` CLI — Rust port of `bin/tztr`. Kept functionally identical to the
 //! Ruby reference (same flags, output, and behavior); see CLAUDE.md.
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
+use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
@@ -14,7 +15,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const HELP: &str = "\
 Usage: tztr [options] [file]
 
-Timezone Translator - convert timestamps timezone. Reads from stdin or file.
+Timezone Translator - convert timestamps between timezones. Reads from stdin or file.
 
     -f, --from TZ        Input timezone (default: auto-detect)
     -t, --to TZ          Output timezone (default: $TZ, else UTC)
@@ -30,7 +31,7 @@ Timezone Translator - convert timestamps timezone. Reads from stdin or file.
     -h, --help           Show this help
 
 Environment:
-  TZ    Sets default output timezone (overridden by -t)
+  TZ    Default timezone for input and output (overridden by -f / -t)
 
 Examples:
   echo '2026-04-03T12:00:00Z' | tztr -t sf
@@ -40,7 +41,7 @@ Examples:
   echo '15:30 UTC' | tztr -t pst -j
   tail -f app.log | tztr -t nyc -J
   echo '2026-04-03T12:00:00Z' | tztr --detect -j
-  echo '15:30 PST' | tztr -t utc -d 2026-01-15";
+  echo '15:30' | tztr -f pacific -t utc -d 2026-01-15";
 
 struct Options {
     from: Option<String>,
@@ -54,6 +55,11 @@ struct Options {
     detect: bool,
     verbose: bool,
     files: Vec<String>,
+}
+
+/// Short flags that take a value (so a bundle like `-tsf` means `-t sf`).
+fn is_value_short(c: char) -> bool {
+    matches!(c, 'f' | 't' | 'd' | 'F')
 }
 
 fn main() -> ExitCode {
@@ -78,20 +84,43 @@ fn run() -> Result<ExitCode, String> {
     let mut ndjson = false;
     let mut detect = false;
     let mut verbose = false;
+    let mut help = false;
     let mut files: Vec<String> = Vec::new();
 
-    let mut args = env::args().skip(1).peekable();
-    while let Some(arg) = args.next() {
-        // Split `--opt=value` into name + inline value.
-        let (name, inline) = match arg.split_once('=') {
-            Some((n, v)) if arg.starts_with("--") => (n.to_string(), Some(v.to_string())),
-            _ => (arg.clone(), None),
+    let mut args: VecDeque<String> = env::args().skip(1).collect();
+    while let Some(arg) = args.pop_front() {
+        // Resolve a token into (name, inline value). Handles `--opt=value` and
+        // bundled short flags (`-vj` -> `-v -j`, `-tsf` -> `-t sf`), mirroring
+        // Ruby's OptionParser: a value-taking flag consumes the rest of the
+        // cluster as its value (or the next token if the rest is empty), and any
+        // trailing boolean flags are requeued.
+        let (name, inline): (String, Option<String>) = if arg.starts_with("--") {
+            match arg.split_once('=') {
+                Some((n, v)) => (n.to_string(), Some(v.to_string())),
+                None => (arg.clone(), None),
+            }
+        } else if arg.starts_with('-') && arg.len() > 2 {
+            let mut chars = arg[1..].chars();
+            let c = chars.next().unwrap();
+            let rest: String = chars.collect();
+            if is_value_short(c) {
+                let inline = if rest.is_empty() { None } else { Some(rest) };
+                (format!("-{c}"), inline)
+            } else {
+                if !rest.is_empty() {
+                    args.push_front(format!("-{rest}"));
+                }
+                (format!("-{c}"), None)
+            }
+        } else {
+            (arg.clone(), None)
         };
+
         let mut take_value = |inline: Option<String>| -> Result<String, String> {
             if let Some(v) = inline {
                 return Ok(v);
             }
-            args.next()
+            args.pop_front()
                 .ok_or_else(|| format!("missing argument for {name}"))
         };
 
@@ -115,15 +144,28 @@ fn run() -> Result<ExitCode, String> {
                 println!("{VERSION}");
                 return Ok(ExitCode::SUCCESS);
             }
-            "-h" | "--help" => {
-                println!("{HELP}");
-                return Ok(ExitCode::SUCCESS);
-            }
+            "-h" | "--help" => help = true,
             other if other.starts_with('-') && other != "-" => {
                 return Err(format!("invalid option: {other}"));
             }
             _ => files.push(arg),
         }
+    }
+
+    let json_mode = json || ndjson;
+
+    if help {
+        if json_mode {
+            let doc = help_doc();
+            if ndjson {
+                println!("{}", serde_json::to_string(&doc).unwrap());
+            } else {
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+            }
+        } else {
+            println!("{HELP}");
+        }
+        return Ok(ExitCode::SUCCESS);
     }
 
     let to = resolve_tz(to_arg.as_deref().or(local_tz.as_deref()).unwrap_or("UTC"));
@@ -151,8 +193,6 @@ fn run() -> Result<ExitCode, String> {
         verbose,
         files,
     };
-
-    let json_mode = opts.json || opts.ndjson;
 
     if opts.inplace && (json_mode || opts.detect) {
         return Err("-i cannot be combined with --json/--ndjson/--detect".to_string());
@@ -353,6 +393,45 @@ fn json_value(m: &Match, detect: bool) -> Value {
 
 fn to_json(m: &Match, detect: bool) -> String {
     serde_json::to_string(&json_value(m, detect)).unwrap()
+}
+
+/// Structured description of the CLI, emitted by `-h -j` / `-h -J` so agents can
+/// read the option schema instead of scraping the text help. Mirrors bin/tztr's
+/// `HELP_DOC` (same fields and option order).
+fn help_doc() -> Value {
+    json!({
+        "name": "tztr",
+        "version": VERSION,
+        "usage": "tztr [options] [file]",
+        "summary": "Timezone Translator - convert timestamps between timezones. Reads from stdin or file.",
+        "options": [
+            {"short": "-f", "long": "--from", "arg": "TZ", "description": "Input timezone (default: auto-detect)"},
+            {"short": "-t", "long": "--to", "arg": "TZ", "description": "Output timezone (default: $TZ, else UTC)"},
+            {"short": "-l", "long": "--list", "arg": null, "description": "List timezone aliases"},
+            {"short": "-i", "long": "--in-place", "arg": null, "description": "Edit file in place"},
+            {"short": "-F", "long": "--format", "arg": "FMT", "description": "Output format: iso, short, time (default: preserve input)"},
+            {"short": "-d", "long": "--date", "arg": "DATE", "description": "Reference date for time-only inputs (resolves DST)"},
+            {"short": "-j", "long": "--json", "arg": null, "description": "Emit a JSON array of matches"},
+            {"short": "-J", "long": "--ndjson", "arg": null, "description": "Emit newline-delimited JSON (one object per match)"},
+            {"short": null, "long": "--detect", "arg": null, "description": "Report detected format/zone without converting"},
+            {"short": "-v", "long": "--verbose", "arg": null, "description": "Print diagnostics to stderr"},
+            {"short": "-V", "long": "--version", "arg": null, "description": "Show version"},
+            {"short": "-h", "long": "--help", "arg": null, "description": "Show this help"},
+        ],
+        "environment": [
+            {"name": "TZ", "description": "Default timezone for input and output (overridden by -f / -t)"}
+        ],
+        "examples": [
+            "echo '2026-04-03T12:00:00Z' | tztr -t sf",
+            "echo '15:30 UTC' | tztr -t pst",
+            "echo '12:00 EST' | tztr -t -8",
+            "tail -f app.log | tztr -t nyc",
+            "echo '15:30 UTC' | tztr -t pst -j",
+            "tail -f app.log | tztr -t nyc -J",
+            "echo '2026-04-03T12:00:00Z' | tztr --detect -j",
+            "echo '15:30' | tztr -f pacific -t utc -d 2026-01-15"
+        ]
+    })
 }
 
 /// Normalize a flexible date string to `YYYY-MM-DD`, or `None` if unparseable.

@@ -264,6 +264,25 @@ RSpec.describe Tztr do
       expect(out).to match(/Timezone Translator/)
     end
 
+    it "shows help as JSON with -h -j" do
+      out, status = Open3.capture2(TZTR, "-h", "-j")
+      expect(status).to be_success
+
+      doc = JSON.parse(out)
+      expect(doc["name"]).to eq("tztr")
+      expect(doc["version"]).to eq(Tztr::VERSION)
+      expect(doc["options"].map { |o| o["long"] }).to include("--from", "--detect")
+
+      # Every documented option's long flag also appears in the text help.
+      text, = Open3.capture2(TZTR, "-h")
+      doc["options"].each { |o| expect(text).to include(o["long"]) }
+
+      # -h -J emits the same document as a single NDJSON line.
+      nd, = Open3.capture2(TZTR, "-h", "-J")
+      expect(nd.lines.size).to eq(1)
+      expect(JSON.parse(nd)).to eq(doc)
+    end
+
     it "shows version with -V" do
       out, status = Open3.capture2(TZTR, "-V")
       expect(status).to be_success

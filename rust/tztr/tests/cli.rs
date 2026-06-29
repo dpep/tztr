@@ -85,6 +85,50 @@ fn shows_help() {
 }
 
 #[test]
+fn bundles_short_flags() {
+    // Bundled short flags expand like Ruby's OptionParser: a value-taking flag
+    // consumes the rest of the cluster as its value.
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["-tsf"]),
+        "2026-04-03T05:00:00-07:00"
+    );
+    // boolean + value-taking: -vtsf == -v -t sf (verbose goes to stderr).
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["-vtsf"]),
+        "2026-04-03T05:00:00-07:00"
+    );
+    // -hj == -h -j -> JSON help.
+    let help = stdout("", &["-hj"]);
+    assert!(serde_json::from_str::<serde_json::Value>(&help).is_ok());
+}
+
+#[test]
+fn shows_help_as_json() {
+    // -h -j emits the option schema as a JSON object (agent-friendly), not text.
+    let out = stdout("", &["-h", "-j"]);
+    let doc: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(doc["name"], "tztr");
+    assert_eq!(doc["version"], env!("CARGO_PKG_VERSION"));
+
+    let opts = doc["options"].as_array().unwrap();
+    assert!(opts.iter().any(|o| o["long"] == "--from"));
+    assert!(opts.iter().any(|o| o["long"] == "--detect"));
+
+    // Every documented option's long flag also appears in the text help.
+    let text = stdout("", &["-h"]);
+    for o in opts {
+        let long = o["long"].as_str().unwrap();
+        assert!(text.contains(long), "text help missing {long}");
+    }
+
+    // -h -J emits the same document as a single NDJSON line.
+    let nd = stdout("", &["-h", "-J"]);
+    assert_eq!(nd.lines().count(), 1);
+    let nd_doc: serde_json::Value = serde_json::from_str(&nd).unwrap();
+    assert_eq!(nd_doc, doc);
+}
+
+#[test]
 fn lists_aliases() {
     let out = stdout("", &["-l"]);
     assert!(out.contains("sf"));

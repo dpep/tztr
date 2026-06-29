@@ -8,6 +8,42 @@ require 'date'
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
 require 'tztr'
 
+# Structured description of the CLI, emitted by `-h -j` / `-h -J` so agents can
+# read the option schema instead of scraping the text help.
+HELP_DOC = {
+  name: 'tztr',
+  version: Tztr::VERSION,
+  usage: 'tztr [options] [file]',
+  summary: 'Timezone Translator - convert timestamps between timezones. Reads from stdin or file.',
+  options: [
+    { short: '-f', long: '--from', arg: 'TZ', description: 'Input timezone (default: auto-detect)' },
+    { short: '-t', long: '--to', arg: 'TZ', description: 'Output timezone (default: $TZ, else UTC)' },
+    { short: '-l', long: '--list', arg: nil, description: 'List timezone aliases' },
+    { short: '-i', long: '--in-place', arg: nil, description: 'Edit file in place' },
+    { short: '-F', long: '--format', arg: 'FMT', description: 'Output format: iso, short, time (default: preserve input)' },
+    { short: '-d', long: '--date', arg: 'DATE', description: 'Reference date for time-only inputs (resolves DST)' },
+    { short: '-j', long: '--json', arg: nil, description: 'Emit a JSON array of matches' },
+    { short: '-J', long: '--ndjson', arg: nil, description: 'Emit newline-delimited JSON (one object per match)' },
+    { short: nil, long: '--detect', arg: nil, description: 'Report detected format/zone without converting' },
+    { short: '-v', long: '--verbose', arg: nil, description: 'Print diagnostics to stderr' },
+    { short: '-V', long: '--version', arg: nil, description: 'Show version' },
+    { short: '-h', long: '--help', arg: nil, description: 'Show this help' },
+  ],
+  environment: [
+    { name: 'TZ', description: 'Default timezone for input and output (overridden by -f / -t)' },
+  ],
+  examples: [
+    "echo '2026-04-03T12:00:00Z' | tztr -t sf",
+    "echo '15:30 UTC' | tztr -t pst",
+    "echo '12:00 EST' | tztr -t -8",
+    "tail -f app.log | tztr -t nyc",
+    "echo '15:30 UTC' | tztr -t pst -j",
+    "tail -f app.log | tztr -t nyc -J",
+    "echo '2026-04-03T12:00:00Z' | tztr --detect -j",
+    "echo '15:30' | tztr -f pacific -t utc -d 2026-01-15",
+  ],
+}.freeze
+
 local_tz = ENV['TZ']
 
 options = {
@@ -19,7 +55,7 @@ options = {
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: tztr [options] [file]"
   opts.separator ""
-  opts.separator "Timezone Translator - convert timestamps timezone. Reads from stdin or file."
+  opts.separator "Timezone Translator - convert timestamps between timezones. Reads from stdin or file."
   opts.separator ""
 
   opts.on("-f", "--from TZ", "Input timezone (default: auto-detect)") { |v| options[:from] = v }
@@ -33,11 +69,11 @@ parser = OptionParser.new do |opts|
   opts.on("--detect", "Report detected format/zone without converting") { options[:detect] = true }
   opts.on("-v", "--verbose", "Print diagnostics to stderr") { options[:verbose] = true }
   opts.on("-V", "--version", "Show version") { puts Tztr::VERSION; exit }
-  opts.on("-h", "--help", "Show this help") { puts opts; exit }
+  opts.on("-h", "--help", "Show this help") { options[:help] = true }
 
   opts.separator ""
   opts.separator "Environment:"
-  opts.separator "  TZ    Sets default output timezone (overridden by -t)"
+  opts.separator "  TZ    Default timezone for input and output (overridden by -f / -t)"
   opts.separator ""
   opts.separator "Examples:"
   opts.separator "  echo '2026-04-03T12:00:00Z' | tztr -t sf"
@@ -47,9 +83,20 @@ parser = OptionParser.new do |opts|
   opts.separator "  echo '15:30 UTC' | tztr -t pst -j"
   opts.separator "  tail -f app.log | tztr -t nyc -J"
   opts.separator "  echo '2026-04-03T12:00:00Z' | tztr --detect -j"
-  opts.separator "  echo '15:30 PST' | tztr -t utc -d 2026-01-15"
+  opts.separator "  echo '15:30' | tztr -f pacific -t utc -d 2026-01-15"
 end
 parser.parse!
+
+json_mode = options[:json] || options[:ndjson]
+
+if options[:help]
+  if json_mode
+    puts(options[:ndjson] ? JSON.generate(HELP_DOC) : JSON.pretty_generate(HELP_DOC))
+  else
+    puts parser
+  end
+  exit
+end
 
 options[:to] = Tztr.resolve_tz(options[:to])
 options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
@@ -63,8 +110,6 @@ if options[:date]
     abort "#{parser.program_name}: invalid date: #{options[:date]}"
   end
 end
-
-json_mode = options[:json] || options[:ndjson]
 
 if options[:inplace] && (json_mode || options[:detect])
   abort "#{parser.program_name}: -i cannot be combined with --json/--ndjson/--detect"

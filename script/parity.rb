@@ -64,6 +64,11 @@ ARG_SETS = [
   ["-t", "utc", "-d", "2026-01-15"],
   ["-t", "utc", "-d", "2026-07-15"],
   ["-t", "utc", "-d", "January 15, 2026"],
+  ["-h", "-j"],
+  ["-h", "-J"],
+  ["-hj"],          # bundled short flags
+  ["-tsf"],         # value attached to a bundled flag
+  ["-vj"],
 ].freeze
 
 def run(bin, args, input, tz)
