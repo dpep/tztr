@@ -63,6 +63,13 @@ tail -f app.log | tztr
 -h, --help          Show this help
 ```
 
+### Supported Formats
+
+- ISO 8601: `2026-04-03T12:00:00Z`, `2026-04-03T12:00:00+05:30`
+- Date + time: `2026-04-03 12:00:00 UTC`
+- Time only: `15:30 UTC`, `08:30:45 PDT`
+- Fractional seconds: `2026-04-03T12:00:00.123Z`
+
 ### JSON output (for agents & scripts)
 
 `-j/--json` emits a JSON array; `-J/--ndjson` emits one object per line, which
@@ -88,9 +95,18 @@ echo '2026-04-03T12:00:00Z' | tztr --detect -j
 # [ { "original": "...", "detected_format": "iso", "detected_tz": "Z" } ]
 ```
 
+Combine `-h` with `-j`/`-J` to get the help itself as JSON — the full option
+schema (flags, args, descriptions, examples), so an agent can read it instead of
+scraping the text:
+
+```bash
+tztr -h -j
+# { "name": "tztr", "version": "...", "options": [ { "short": "-f", "long": "--from", ... } ], ... }
+```
+
 ### Environment
 
-Set `TZ` to change the default output timezone (overridden by `-t`):
+Set `TZ` to change the default timezone for input and output (overridden by `-f` / `-t`):
 
 ```bash
 export TZ=America/Los_Angeles
@@ -98,31 +114,33 @@ echo '2026-04-03T12:00:00Z' | tztr
 # 2026-04-03T05:00:00-07:00
 ```
 
-### Supported Formats
-
-- ISO 8601: `2026-04-03T12:00:00Z`, `2026-04-03T12:00:00+05:30`
-- Date + time: `2026-04-03 12:00:00 UTC`
-- Time only: `15:30 UTC`, `08:30:45 PDT`
-- Fractional seconds: `2026-04-03T12:00:00.123Z`
-
 ### Caveat: time-only inputs and DST
 
-A time-only input (e.g. `15:30 PST`) carries no date, so there's no way to know
-whether it fell during standard or daylight time. By default `tztr` resolves it
-against **today's** date, which can be off by an hour for timestamps from the
-other side of a DST boundary. Inputs with a date (`2026-04-03 15:30 PST`) are
-unaffected.
+A time-only input carries no date, so a DST-observing zone can't tell whether
+it was standard or daylight time. When you pair a bare time with a named source
+zone, `tztr` resolves it against **today's** date — which can be off by an hour
+for a timestamp from the other side of a DST boundary:
+
+```bash
+echo '15:30' | tztr -f pacific -t utc
+# 22:30 UTC   (today is summer, so pacific -> PDT, UTC-7)
+```
 
 Two ways to handle it:
 
 ```bash
-# Supply the date the times belong to (accepts flexible formats):
-echo '15:30 PST' | tztr -t utc -d 2026-01-15
-echo '15:30 PST' | tztr -t utc -d 'January 15, 2026'
+# Supply the date the time belongs to (accepts flexible formats):
+echo '15:30' | tztr -f pacific -t utc -d 2026-01-15
+# 23:30 UTC   (January -> PST, UTC-8)
+echo '15:30' | tztr -f pacific -t utc -d 'January 15, 2026'
 
 # Or sidestep DST entirely with a fixed numeric offset instead of a named zone:
-echo '15:30' | tztr -f -8 -t utc   # -8 -> Etc/GMT+8, never observes daylight time
+echo '15:30' | tztr -f -8 -t utc
+# 23:30 UTC   (-8 -> Etc/GMT+8, never observes daylight time)
 ```
+
+Inputs that already carry a date (`2026-04-03 15:30`) or a fixed offset are
+unaffected.
 
 
 ## Library
@@ -133,16 +151,3 @@ require "tztr"
 Tztr.translate("log 2026-04-03T12:00:00Z event", to: "America/Los_Angeles")
 # => "log 2026-04-03T05:00:00-07:00 event"
 ```
-
-
-----
-## Contributing
-
-Yes please  :)
-
-1. Fork it
-1. Create your feature branch (`git checkout -b my-feature`)
-1. Ensure the tests pass (`bundle exec rspec`)
-1. Commit your changes (`git commit -am 'awesome new feature'`)
-1. Push your branch (`git push origin my-feature`)
-1. Create a Pull Request
