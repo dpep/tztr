@@ -10,28 +10,9 @@ Reads from stdin or file, auto-detects timestamp formats, and preserves the orig
 
 ## Install
 
-With Homebrew (installs the Rust binary):
-
 ```bash
 brew install dpep/tools/tztr
 ```
-
-With RubyGems:
-
-```bash
-gem install tztr
-```
-
-With Cargo:
-
-```bash
-cargo install tztr
-```
-
-> `tztr` ships two implementations kept functionally identical: the Ruby gem
-> (reference, at the repo root) and a [Rust crate](rust/tztr) (`cargo install`
-> / Homebrew). They share the same CLI, output, and behavior — see
-> [`rust/REPORT.md`](rust/REPORT.md) for port notes and a perf comparison.
 
 
 ## Usage
@@ -145,9 +126,23 @@ unaffected.
 
 ## Library
 
+`tztr` is also published as a Ruby gem and a Rust crate:
+
+```bash
+gem install tztr      # Ruby
+cargo install tztr    # Rust
+```
+
+Use it from Ruby:
+
 ```ruby
 require "tztr"
 
 Tztr.translate("log 2026-04-03T12:00:00Z event", to: "America/Los_Angeles")
 # => "log 2026-04-03T05:00:00-07:00 event"
 ```
+
+It ships two implementations kept functionally identical: the Ruby gem
+(reference) and a [Rust crate](rust/tztr) — Homebrew installs the Rust binary.
+Same CLI, output, and behavior; see [`rust/REPORT.md`](rust/REPORT.md) for port
+notes and a perf comparison.
