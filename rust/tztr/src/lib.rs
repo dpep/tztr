@@ -254,15 +254,22 @@ fn parse(
         Fixed(i32),
         InZone(&'a TimeZone),
     }
-    let (mode, today_zone): (Mode, &TimeZone) = if has_token {
+    // For date-less inputs, the missing date is "today" as seen in the zone the
+    // timestamp is expressed in (mirrors Ruby's Time.parse) — i.e. the embedded
+    // zone when present, else the source/output zone. NOT the output zone when
+    // an embedded zone is given, which would be off by a day near a boundary.
+    let (mode, today_tz): (Mode, TimeZone) = if has_token {
         match recognized {
-            Some(off) => (Mode::Fixed(off), to_tz),
-            None => (Mode::InZone(to_tz), to_tz), // unknown abbrev -> ignored
+            Some(off) => (
+                Mode::Fixed(off),
+                TimeZone::fixed(Offset::from_seconds(off).ok()?),
+            ),
+            None => (Mode::InZone(to_tz), to_tz.clone()), // unknown abbrev -> ignored
         }
     } else if let Some(f) = from_tz {
-        (Mode::InZone(f), f)
+        (Mode::InZone(f), f.clone())
     } else {
-        (Mode::InZone(to_tz), to_tz)
+        (Mode::InZone(to_tz), to_tz.clone())
     };
 
     let (year, month, day) = match (caps.get(1), caps.get(2), caps.get(3)) {
@@ -271,7 +278,7 @@ fn parse(
             mo.as_str().parse().ok()?,
             d.as_str().parse().ok()?,
         ),
-        _ => today_in(today_zone),
+        _ => today_in(&today_tz),
     };
 
     let civil = DateTime::new(year, month, day, hour, minute, second, nanos).ok()?;
@@ -656,6 +663,34 @@ mod tests {
                 Some("2026-07-15")
             ),
             "22:30 UTC"
+        );
+    }
+
+    #[test]
+    fn dateless_input_anchors_date_to_embedded_zone() {
+        // "15:30 UTC" carries no date; the missing date is "today" in the
+        // embedded zone (UTC), independent of the output zone. Regression: a
+        // recognized embedded zone used to borrow the output zone's "today",
+        // which lands a day off near a UTC midnight boundary. Rendered to a
+        // fixed -05:00 offset (no DST, so the assertion holds year-round);
+        // 15:30Z -> 10:30 on the same UTC date.
+        let today = Zoned::now().with_time_zone(TimeZone::UTC).date();
+        let expected = format!(
+            "{:04}-{:02}-{:02} 10:30:00-05:00",
+            today.year(),
+            today.month(),
+            today.day()
+        );
+        assert_eq!(
+            translate(
+                "15:30 UTC",
+                "Etc/GMT+5",
+                None,
+                Some(Format::Iso),
+                false,
+                None
+            ),
+            expected
         );
     }
 }
