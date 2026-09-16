@@ -480,6 +480,44 @@ fn a_broken_pipe_is_not_blamed_on_the_input_file() {
 }
 
 #[test]
+fn rejects_an_inline_value_on_a_flag_that_takes_none() {
+    // Accepting `--json=true` and throwing the value away teaches the user
+    // nothing -- and `--format=iso` does work, so the shape looks plausible.
+    for flag in [
+        "--json",
+        "--ndjson",
+        "--detect",
+        "--verbose",
+        "--list",
+        "--in-place",
+        "--version",
+        "--help",
+    ] {
+        assert_eq!(
+            fails("2026-04-03T12:00:00Z\n", &[&format!("{flag}=foo")]),
+            format!("tztr: {flag} takes no argument"),
+            "{flag}"
+        );
+    }
+}
+
+#[test]
+fn still_accepts_an_inline_value_where_one_belongs() {
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["--format=short", "--to=nyc"]),
+        "2026-04-03 08:00 EDT"
+    );
+    assert_eq!(
+        stdout("15:30 PST", &["--to=utc", "--date=2026-01-15"]),
+        "23:30 UTC"
+    );
+    // Short flags have no `=value` form to police.
+    let out = stdout("2026-04-03T12:00:00Z", &["-j", "-t", "utc"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v[0]["translated"], "2026-04-03T12:00:00Z");
+}
+
+#[test]
 fn errors_not_about_a_file_stay_bare() {
     assert_eq!(
         fails("2026-04-03T12:00:00Z\n", &["--bogus"]),
