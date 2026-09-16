@@ -567,13 +567,18 @@ RSpec.describe Tztr do
       expect(err).to include("implicit, from $TZ")
     end
 
-    it "reports a missing file without a backtrace" do
+    it "names the file in a missing-file error" do
       expect(run_fail("/tmp/tztr-does-not-exist.txt"))
-        .to eq("tztr: No such file or directory (os error 2)")
+        .to eq("tztr: /tmp/tztr-does-not-exist.txt: No such file or directory (os error 2)")
     end
 
-    it "reports a directory argument without a backtrace" do
-      expect(run_fail("/tmp")).to eq("tztr: Is a directory (os error 21)")
+    it "names the file in a directory-argument error" do
+      expect(run_fail("/tmp")).to eq("tztr: /tmp: Is a directory (os error 21)")
+    end
+
+    it "names the file in an -i error too" do
+      expect(run_fail("-i", "/tmp/tztr-does-not-exist.txt"))
+        .to eq("tztr: /tmp/tztr-does-not-exist.txt: No such file or directory (os error 2)")
     end
 
     it "reports an unknown flag without a backtrace" do

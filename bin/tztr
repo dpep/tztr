@@ -136,6 +136,21 @@ disclose = lambda do |line|
   warn "#{parser.program_name}: no -d given, assuming #{Date.today.strftime('%Y-%m-%d')} for DST resolution" unless options[:date]
 end
 
+# An error about one of our inputs names it. A broken pipe is about stdout and
+# stdin has no name, so neither is about an input file: both fall through to
+# the bare form below.
+file_error = lambda do |path, error|
+  raise error if path.nil? || error.is_a?(Errno::EPIPE)
+
+  abort "#{parser.program_name}: #{path}: #{SystemCallError.new(error.errno).message} (os error #{error.errno})"
+end
+
+open_input = lambda do |path|
+  File.open(path)
+rescue SystemCallError => e
+  file_error.call(path, e)
+end
+
 $stdout.sync = true
 
 if ARGV.empty? && $stdin.tty?
@@ -154,12 +169,15 @@ begin
         Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], date: options[:date])
       end.join
       File.write(file, translated) if translated != content
+    rescue SystemCallError => e
+      file_error.call(file, e)
     end
   else
     collected = [] if options[:json]
 
-    inputs = ARGV.empty? ? [$stdin] : ARGV.map { |f| File.open(f) }
-    inputs.each do |input|
+    # Paired with its path so a read error can name it; stdin has none.
+    inputs = ARGV.empty? ? [[$stdin, nil]] : ARGV.map { |path| [open_input.call(path), path] }
+    inputs.each do |input, path|
       input.each_line do |line|
         disclose.call(line) if options[:verbose]
 
@@ -178,6 +196,8 @@ begin
           print Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], date: options[:date])
         end
       end
+    rescue SystemCallError => e
+      file_error.call(path, e)
     end
 
     puts JSON.pretty_generate(collected) if options[:json]
