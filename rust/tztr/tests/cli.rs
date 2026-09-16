@@ -429,6 +429,34 @@ fn an_error_about_a_file_names_the_file() {
 }
 
 #[test]
+fn a_broken_pipe_is_not_blamed_on_the_input_file() {
+    // `tztr big.log | head -1` is the commonest way this tool gets stopped.
+    // EPIPE comes from writing to stdout — the input file was fine, and naming
+    // it sends the user to look in the wrong place.
+    let path = std::env::temp_dir().join("tztr-epipe.log");
+    let body = "2026-04-03T12:00:00Z\n".repeat(50_000);
+    std::fs::write(&path, body).unwrap();
+
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "{} -t pst {} | head -1",
+            bin(),
+            path.to_str().unwrap()
+        ))
+        .env("TZ", "UTC")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    std::fs::remove_file(&path).unwrap();
+
+    assert!(
+        stderr.is_empty() || stderr.trim_end() == "tztr: Broken pipe (os error 32)",
+        "unexpected stderr: {stderr:?}"
+    );
+}
+
+#[test]
 fn errors_not_about_a_file_stay_bare() {
     assert_eq!(
         fails("2026-04-03T12:00:00Z\n", &["--bogus"]),
