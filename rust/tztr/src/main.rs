@@ -62,6 +62,17 @@ struct Options {
     files: Vec<String>,
 }
 
+/// An error about one of our inputs names it. A broken pipe is about stdout and
+/// stdin has no name, so neither is about an input file: both fall through to
+/// the bare form.
+fn file_error(file: &str, e: io::Error) -> String {
+    if e.kind() == io::ErrorKind::BrokenPipe {
+        e.to_string()
+    } else {
+        format!("{file}: {e}")
+    }
+}
+
 /// Short flags that take a value (so a bundle like `-tsf` means `-t sf`).
 fn is_value_short(c: char) -> bool {
     matches!(c, 'f' | 't' | 'd' | 'F')
@@ -238,7 +249,7 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
         return Err("-i requires a file argument".to_string());
     }
     for file in &opts.files {
-        let named = |e: io::Error| format!("{file}: {e}");
+        let named = |e| file_error(file, e);
         let content = fs::read(file).map_err(named)?;
         let mut translated: Vec<u8> = Vec::with_capacity(content.len());
         for line in content.split_inclusive(|b| *b == b'\n') {
@@ -283,9 +294,7 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
             .map_err(|e| e.to_string())?;
         } else {
             for file in &opts.files {
-                // An error about a file names it — with several arguments the
-                // bare message does not say which one failed.
-                let named = |e: io::Error| format!("{file}: {e}");
+                let named = |e| file_error(file, e);
                 let f = fs::File::open(file).map_err(named)?;
                 for_each_line(BufReader::new(f), |line| {
                     handle_line(opts, json_mode, line, &mut sink)
