@@ -111,25 +111,66 @@ fn patterns() -> &'static [Regex] {
         .as_slice()
 }
 
-/// Resolve a user-supplied zone (alias, numeric offset, or IANA name) to an
-/// IANA-style name string. Mirrors `Tztr.resolve_tz`.
-pub fn resolve_tz(input: &str) -> String {
-    // Numeric offset: -7 -> Etc/GMT+7 (POSIX sign is inverted)
-    if numeric_offset_re().is_match(input) {
-        let n: i32 = input.parse().unwrap_or(0);
-        if n == 0 {
-            return "UTC".to_string();
+/// Why a user-supplied timezone could not be resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TzError {
+    /// Not an alias, not a numeric offset, and not a name the system tz
+    /// database knows.
+    Unknown(String),
+    /// A whole-hour numeric offset outside the range real zones occupy.
+    OffsetOutOfRange(String),
+}
+
+impl std::fmt::Display for TzError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown(s) => write!(f, "unknown timezone: {s}"),
+            Self::OffsetOutOfRange(s) => {
+                write!(f, "offset out of range: {s} (expected -12..14)")
+            }
         }
+    }
+}
+
+impl std::error::Error for TzError {}
+
+/// Resolve a user-supplied zone (alias, numeric offset, or IANA name) to an
+/// IANA-style name the system tz database can load. Mirrors `Tztr.resolve_tz`.
+///
+/// This is the validating boundary: everything downstream may assume the name
+/// it returns names a real zone. A zone that cannot be resolved is an error,
+/// never a silent fall back to UTC — the old fallback answered every
+/// conversion in the wrong zone, confidently.
+pub fn resolve_tz(input: &str) -> Result<String, TzError> {
+    // POSIX spells TZ with a leading colon (`TZ=:America/New_York`).
+    let input = input.strip_prefix(':').unwrap_or(input);
+
+    if numeric_offset_re().is_match(input) {
+        let n: i32 = input.parse().map_err(|_| unknown(input))?;
+        if n == 0 {
+            return Ok("UTC".to_string());
+        }
+        if !(-12..=14).contains(&n) {
+            return Err(TzError::OffsetOutOfRange(input.to_string()));
+        }
+        // Numeric offset: -7 -> Etc/GMT+7 (POSIX sign is inverted)
         let sign = if n > 0 { '-' } else { '+' };
-        return format!("Etc/GMT{}{}", sign, n.abs());
+        return Ok(format!("Etc/GMT{}{}", sign, n.abs()));
     }
 
     let key = input.to_lowercase().replace(' ', "_");
-    timezone_aliases()
+    let name = timezone_aliases()
         .iter()
         .find(|(k, _)| *k == key)
-        .map(|(_, v)| v.to_string())
-        .unwrap_or_else(|| input.to_string())
+        .map_or(input, |(_, v)| *v);
+
+    TimeZone::get(name).map_err(|_| unknown(input))?;
+    Ok(name.to_string())
+}
+
+fn unknown(input: &str) -> TzError {
+    TzError::Unknown(input.to_string())
 }
 
 fn numeric_offset_re() -> &'static Regex {
@@ -394,11 +435,14 @@ fn parse_numeric_offset(token: &str) -> Option<i32> {
     Some(sign * (hh * 3600 + mm * 60))
 }
 
-/// Resolve to a `TimeZone`, falling back to UTC for unknown names — matching
-/// Ruby, where an invalid `ENV['TZ']` is treated as UTC.
+/// Resolve to a `TimeZone`. Callers are expected to have validated the name
+/// through [`resolve_tz`] first (the CLI does, and exits on failure); the UTC
+/// fallback here is the last resort for a library caller that did not.
 fn resolve_zone(input: &str) -> TimeZone {
-    let name = resolve_tz(input);
-    TimeZone::get(&name).unwrap_or(TimeZone::UTC)
+    resolve_tz(input)
+        .ok()
+        .and_then(|name| TimeZone::get(&name).ok())
+        .unwrap_or(TimeZone::UTC)
 }
 
 // --- output formatting -----------------------------------------------------
@@ -631,14 +675,22 @@ mod tests {
         assert_eq!(tr("no timestamps here", "UTC"), "no timestamps here");
     }
 
+    fn tz(input: &str) -> String {
+        resolve_tz(input).expect("resolvable")
+    }
+
     #[test]
     fn resolve_tz_abbreviations_and_cities() {
-        assert_eq!(resolve_tz("pst"), "America/Los_Angeles");
-        assert_eq!(resolve_tz("PST"), "America/Los_Angeles");
-        assert_eq!(resolve_tz("sf"), "America/Los_Angeles");
-        assert_eq!(resolve_tz("nyc"), "America/New_York");
-        assert_eq!(resolve_tz("tokyo"), "Asia/Tokyo");
-        assert_eq!(resolve_tz("utc"), "UTC");
+        for (input, expected) in [
+            ("pst", "America/Los_Angeles"),
+            ("PST", "America/Los_Angeles"),
+            ("sf", "America/Los_Angeles"),
+            ("nyc", "America/New_York"),
+            ("tokyo", "Asia/Tokyo"),
+            ("utc", "UTC"),
+        ] {
+            assert_eq!(tz(input), expected, "{input}");
+        }
     }
 
     #[test]
@@ -655,26 +707,51 @@ mod tests {
     #[test]
     fn gmt_is_utc_not_london() {
         // Europe/London follows British Summer Time; GMT does not.
-        assert_eq!(resolve_tz("gmt"), "UTC");
-        assert_eq!(resolve_tz("bst"), "Europe/London");
-        assert_eq!(resolve_tz("london"), "Europe/London");
+        assert_eq!(tz("gmt"), "UTC");
+        assert_eq!(tz("bst"), "Europe/London");
+        assert_eq!(tz("london"), "Europe/London");
         assert_eq!(
-            tr("2026-07-15T12:00:00Z", &resolve_tz("gmt")),
+            tr("2026-07-15T12:00:00Z", &tz("gmt")),
             "2026-07-15T12:00:00Z"
         );
     }
 
     #[test]
     fn resolve_tz_numeric_offsets() {
-        assert_eq!(resolve_tz("-7"), "Etc/GMT+7");
-        assert_eq!(resolve_tz("+9"), "Etc/GMT-9");
-        assert_eq!(resolve_tz("0"), "UTC");
-        assert_eq!(resolve_tz("-12"), "Etc/GMT+12");
+        assert_eq!(tz("-7"), "Etc/GMT+7");
+        assert_eq!(tz("+9"), "Etc/GMT-9");
+        assert_eq!(tz("0"), "UTC");
+        assert_eq!(tz("-12"), "Etc/GMT+12");
+        assert_eq!(tz("14"), "Etc/GMT-14");
     }
 
     #[test]
     fn resolve_tz_passes_through_iana() {
-        assert_eq!(resolve_tz("America/Chicago"), "America/Chicago");
+        assert_eq!(tz("America/Chicago"), "America/Chicago");
+        assert_eq!(tz(":America/Chicago"), "America/Chicago");
+    }
+
+    #[test]
+    fn resolve_tz_rejects_what_it_cannot_resolve() {
+        use TzError::*;
+        for (input, expected) in [
+            ("Bogus/Zone", Unknown("Bogus/Zone".into())),
+            ("", Unknown("".into())),
+            ("America/New York", Unknown("America/New York".into())),
+            ("+5:30", Unknown("+5:30".into())),
+            ("15", OffsetOutOfRange("15".into())),
+            ("-13", OffsetOutOfRange("-13".into())),
+        ] {
+            assert_eq!(resolve_tz(input), Err(expected), "{input}");
+        }
+        assert_eq!(
+            resolve_tz("15").unwrap_err().to_string(),
+            "offset out of range: 15 (expected -12..14)"
+        );
+        assert_eq!(
+            resolve_tz("Bogus/Zone").unwrap_err().to_string(),
+            "unknown timezone: Bogus/Zone"
+        );
     }
 
     #[test]

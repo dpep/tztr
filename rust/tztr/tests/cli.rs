@@ -8,30 +8,60 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_tztr")
 }
 
-/// Run the CLI with args + stdin under a fixed TZ, returning (stdout, success).
-fn run(input: &str, args: &[&str], tz: &str) -> (String, bool) {
-    let mut child = Command::new(bin())
-        .args(args)
-        .env("TZ", tz)
+struct Output {
+    stdout: Vec<u8>,
+    stderr: String,
+    ok: bool,
+}
+
+impl Output {
+    fn out(&self) -> &str {
+        std::str::from_utf8(&self.stdout).expect("stdout is utf-8")
+    }
+}
+
+/// Run the CLI with args + stdin. `tz` of `None` runs with `TZ` unset.
+fn run_tz(input: &[u8], args: &[&str], tz: Option<&str>) -> Output {
+    let mut cmd = Command::new(bin());
+    cmd.args(args);
+    match tz {
+        Some(tz) => cmd.env("TZ", tz),
+        None => cmd.env_remove("TZ"),
+    };
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
     let out = child.wait_with_output().unwrap();
-    (String::from_utf8(out.stdout).unwrap(), out.status.success())
+    Output {
+        stdout: out.stdout,
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        ok: out.status.success(),
+    }
+}
+
+/// Run the CLI with args + stdin under a fixed TZ, returning (stdout, success).
+fn run(input: &str, args: &[&str], tz: &str) -> (String, bool) {
+    let o = run_tz(input.as_bytes(), args, Some(tz));
+    (o.out().to_string(), o.ok)
 }
 
 fn stdout(input: &str, args: &[&str]) -> String {
     let (o, ok) = run(input, args, "UTC");
     assert!(ok, "expected success");
     o.trim_end().to_string()
+}
+
+/// Run expecting failure, returning the single stderr line (without `\n`).
+fn fails(input: &str, args: &[&str]) -> String {
+    let o = run_tz(input.as_bytes(), args, Some("UTC"));
+    assert!(!o.ok, "expected failure, got stdout {:?}", o.out());
+    assert!(o.stdout.is_empty(), "expected no stdout: {:?}", o.out());
+    // Only the newline — a trailing space is part of the message for `-t ''`.
+    o.stderr.trim_end_matches('\n').to_string()
 }
 
 #[test]
@@ -199,4 +229,77 @@ fn rejects_combining_inplace_with_json() {
 fn aborts_on_unparseable_date() {
     let (_out, ok) = run("15:30 PST\n", &["-d", "not-a-date"], "UTC");
     assert!(!ok);
+}
+
+// --- B4/B5/B13: an unresolvable timezone is a hard error --------------------
+
+#[test]
+fn rejects_unknown_timezones() {
+    for (args, expected) in [
+        (["-t", "Bogus/Zone"], "tztr: unknown timezone: Bogus/Zone"),
+        (["-t", ""], "tztr: unknown timezone: "),
+        (
+            ["-t", "America/New York"],
+            "tztr: unknown timezone: America/New York",
+        ),
+        (["-f", "Bogus/Zone"], "tztr: unknown timezone: Bogus/Zone"),
+    ] {
+        assert_eq!(fails("2026-04-03T12:00:00Z\n", &args), expected);
+    }
+}
+
+#[test]
+fn rejects_out_of_range_numeric_offsets() {
+    for arg in ["15", "-13", "99"] {
+        assert_eq!(
+            fails("2026-04-03T12:00:00Z\n", &["-t", arg]),
+            format!("tztr: offset out of range: {arg} (expected -12..14)")
+        );
+    }
+    // ...and accepts the edges.
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["-t", "14"]),
+        "2026-04-04T02:00:00+14:00"
+    );
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["-t", "-12"]),
+        "2026-04-03T00:00:00-12:00"
+    );
+}
+
+#[test]
+fn rejects_sub_hour_numeric_offsets() {
+    // Silently mis-signing these is worse than refusing; half-hour zones are
+    // reached by name (`-t ist`).
+    assert_eq!(
+        fails("2026-04-03T12:00:00Z\n", &["-t", "+5:30"]),
+        "tztr: unknown timezone: +5:30"
+    );
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["-t", "ist"]),
+        "2026-04-03T17:30:00+05:30"
+    );
+}
+
+#[test]
+fn rejects_an_unresolvable_tz_env() {
+    let o = run_tz(b"2026-04-03T12:00:00Z\n", &[], Some("Bogus/Zone"));
+    assert!(!o.ok);
+    assert_eq!(o.stderr.trim_end(), "tztr: unknown timezone: Bogus/Zone");
+}
+
+#[test]
+fn honors_the_posix_leading_colon_on_tz() {
+    // POSIX spells TZ with a leading colon; without this, TimeZone::get failed
+    // and *every* conversion silently came out UTC.
+    let o = run_tz(b"2026-04-03T12:00:00Z\n", &[], Some(":America/New_York"));
+    assert!(o.ok, "{}", o.stderr);
+    assert_eq!(o.out().trim_end(), "2026-04-03T08:00:00-04:00");
+}
+
+#[test]
+fn treats_an_empty_tz_as_unset() {
+    let o = run_tz(b"2026-04-03T12:00:00Z\n", &[], Some(""));
+    assert!(o.ok, "{}", o.stderr);
+    assert_eq!(o.out().trim_end(), "2026-04-03T12:00:00Z");
 }

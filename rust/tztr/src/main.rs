@@ -168,12 +168,13 @@ fn run() -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let to = resolve_tz(to_arg.as_deref().or(local_tz.as_deref()).unwrap_or("UTC"));
-    let from = from
-        .as_deref()
-        .map(resolve_tz)
-        .or_else(|| local_tz.as_deref().map(resolve_tz));
-    let local = to == resolve_tz(local_tz.as_deref().unwrap_or("UTC"));
+    let zone = |input: &str| resolve_tz(input).map_err(|e| e.to_string());
+    let to = zone(to_arg.as_deref().or(local_tz.as_deref()).unwrap_or("UTC"))?;
+    let from = match from.as_deref().or(local_tz.as_deref()) {
+        Some(f) => Some(zone(f)?),
+        None => None,
+    };
+    let local = to == zone(local_tz.as_deref().unwrap_or("UTC"))?;
 
     let date = match date {
         Some(d) => Some(normalize_date(&d).ok_or_else(|| format!("invalid date: {d}"))?),
