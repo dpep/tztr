@@ -10,7 +10,7 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
 use tztr::{
-    has_bare_timestamp, matches_bytes, resolve_tz, timezone_aliases, today_in_zone,
+    has_dateless_timestamp, matches_bytes, resolve_tz, timezone_aliases, today_in_zone,
     translate_bytes, Format, Match,
 };
 
@@ -147,6 +147,17 @@ fn run() -> Result<ExitCode, String> {
                 .ok_or_else(|| format!("missing argument for {name}"))
         };
 
+        // A no-argument flag written `--name=value` used to accept the value
+        // and throw it away, so `--json=true` worked and taught the user
+        // nothing -- and `--format=iso` does take one, which makes the shape
+        // look plausible. Refuse it instead.
+        let no_value = |inline: Option<String>| -> Result<(), String> {
+            match inline {
+                Some(_) => Err(format!("{name} takes no argument")),
+                None => Ok(()),
+            }
+        };
+
         match name.as_str() {
             "-f" | "--from" => from = Some(take_value(inline)?),
             "-t" | "--to" => to_arg = Some(take_value(inline)?),
@@ -155,19 +166,39 @@ fn run() -> Result<ExitCode, String> {
                 format = Some(parse_format(&take_value(inline)?)?);
             }
             "-l" | "--list" => {
+                no_value(inline)?;
                 list_aliases();
                 return Ok(ExitCode::SUCCESS);
             }
-            "-i" | "--in-place" => inplace = true,
-            "-j" | "--json" => json = true,
-            "-J" | "--ndjson" => ndjson = true,
-            "--detect" => detect = true,
-            "-v" | "--verbose" => verbose = true,
+            "-i" | "--in-place" => {
+                no_value(inline)?;
+                inplace = true;
+            }
+            "-j" | "--json" => {
+                no_value(inline)?;
+                json = true;
+            }
+            "-J" | "--ndjson" => {
+                no_value(inline)?;
+                ndjson = true;
+            }
+            "--detect" => {
+                no_value(inline)?;
+                detect = true;
+            }
+            "-v" | "--verbose" => {
+                no_value(inline)?;
+                verbose = true;
+            }
             "-V" | "--version" => {
+                no_value(inline)?;
                 println!("{VERSION}");
                 return Ok(ExitCode::SUCCESS);
             }
-            "-h" | "--help" => help = true,
+            "-h" | "--help" => {
+                no_value(inline)?;
+                help = true;
+            }
             other if other.starts_with('-') && other != "-" => {
                 return Err(format!("invalid option: {other}"));
             }
@@ -345,7 +376,7 @@ fn handle_line<W: Write>(
     line: &[u8],
     sink: &mut Sink<W>,
 ) -> io::Result<()> {
-    if opts.verbose && !opts.detect && !sink.disclosed && has_bare_timestamp(line) {
+    if opts.verbose && !opts.detect && !sink.disclosed && has_dateless_timestamp(line) {
         sink.disclosed = true;
         disclose_assumptions(opts);
     }

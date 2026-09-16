@@ -294,18 +294,21 @@ fn convert_match(
     Some(format_time(&zoned, format, m))
 }
 
-/// Whether `line` carries a timestamp with neither a zone nor a date — the
-/// case where converting it means assuming both. The CLI asks so that `-v` can
-/// disclose those assumptions instead of answering silently.
-pub fn has_bare_timestamp(line: &[u8]) -> bool {
+/// Whether `line` carries a timestamp with no date. Converting one means
+/// assuming a date, because the *output* zone's DST still has to be decided —
+/// `15:30 UTC` is 11:30 in New York in July and 10:30 in January. A match that
+/// names its own zone is not off the hook: the exposure is on the output side,
+/// and only `-d` answers it.
+///
+/// The CLI asks so that `-v` can disclose the assumption instead of answering
+/// silently.
+pub fn has_dateless_timestamp(line: &[u8]) -> bool {
     patterns()
         .iter()
         .find(|p| p.is_match(line))
         .is_some_and(|p| {
-            p.find_iter(line).any(|m| {
-                let s = ascii(m.as_bytes());
-                detect_format(s) == "time" && detect_zone(s).is_none()
-            })
+            p.find_iter(line)
+                .any(|m| detect_format(ascii(m.as_bytes())) == "time")
         })
 }
 

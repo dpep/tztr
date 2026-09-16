@@ -8,6 +8,12 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_tztr")
 }
 
+/// A scratch file named for this process, so concurrent test runs (the parity
+/// harness builds and runs alongside) cannot collide on it.
+fn temp_path(stem: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("{stem}-{}.log", std::process::id()))
+}
+
 struct Output {
     stdout: Vec<u8>,
     stderr: String,
@@ -34,7 +40,18 @@ fn run_tz(input: &[u8], args: &[&str], tz: Option<&str>) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
+    // A run that fails on its arguments exits before reading stdin, so this
+    // write races with the child and loses the pipe. That is the case under
+    // test, not a failure of it.
+    let mut stdin = child.stdin.take().unwrap();
+    if let Err(e) = stdin.write_all(input) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "writing stdin: {e}"
+        );
+    }
+    drop(stdin);
     let out = child.wait_with_output().unwrap();
     Output {
         stdout: out.stdout,
@@ -289,6 +306,29 @@ fn verbose_dates_the_dst_assumption_in_the_target_zone() {
 }
 
 #[test]
+fn verbose_discloses_the_date_assumption_even_when_the_match_names_a_zone() {
+    // `15:30 UTC` into New York still has to assume a date to know whether the
+    // answer is EDT or EST -- the DST exposure is on the *output* side, so a
+    // match carrying its own zone is not off the hook.
+    let o = run_tz(b"15:30 UTC\n", &["-v", "-t", "nyc"], None);
+    assert!(o.ok, "{}", o.stderr);
+    let expected = format!(
+        "tztr: no -d given, assuming {} for DST resolution",
+        tztr::today_in_zone("America/New_York")
+    );
+    assert!(o.stderr.contains(&expected), "{}", o.stderr);
+
+    // ...and `-d` answers it, so nothing is assumed.
+    let o = run_tz(
+        b"15:30 UTC\n",
+        &["-v", "-t", "nyc", "-d", "2026-01-15"],
+        None,
+    );
+    assert!(!o.stderr.contains("no -d given"), "{}", o.stderr);
+    assert_eq!(o.out().trim_end(), "10:30 EST");
+}
+
+#[test]
 fn verbose_stays_quiet_when_nothing_was_assumed() {
     // -f and -d given: both assumptions are the user's, not ours.
     let o = verbose_bare(&["-v", "-f", "pst", "-t", "nyc", "-d", "2026-01-15"]);
@@ -433,7 +473,7 @@ fn a_broken_pipe_is_not_blamed_on_the_input_file() {
     // `tztr big.log | head -1` is the commonest way this tool gets stopped.
     // EPIPE comes from writing to stdout — the input file was fine, and naming
     // it sends the user to look in the wrong place.
-    let path = std::env::temp_dir().join("tztr-epipe.log");
+    let path = temp_path("tztr-epipe");
     let body = "2026-04-03T12:00:00Z\n".repeat(50_000);
     std::fs::write(&path, body).unwrap();
 
@@ -454,6 +494,44 @@ fn a_broken_pipe_is_not_blamed_on_the_input_file() {
         stderr.is_empty() || stderr.trim_end() == "tztr: Broken pipe (os error 32)",
         "unexpected stderr: {stderr:?}"
     );
+}
+
+#[test]
+fn rejects_an_inline_value_on_a_flag_that_takes_none() {
+    // Accepting `--json=true` and throwing the value away teaches the user
+    // nothing -- and `--format=iso` does work, so the shape looks plausible.
+    for flag in [
+        "--json",
+        "--ndjson",
+        "--detect",
+        "--verbose",
+        "--list",
+        "--in-place",
+        "--version",
+        "--help",
+    ] {
+        assert_eq!(
+            fails("2026-04-03T12:00:00Z\n", &[&format!("{flag}=foo")]),
+            format!("tztr: {flag} takes no argument"),
+            "{flag}"
+        );
+    }
+}
+
+#[test]
+fn still_accepts_an_inline_value_where_one_belongs() {
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["--format=short", "--to=nyc"]),
+        "2026-04-03 08:00 EDT"
+    );
+    assert_eq!(
+        stdout("15:30 PST", &["--to=utc", "--date=2026-01-15"]),
+        "23:30 UTC"
+    );
+    // Short flags have no `=value` form to police.
+    let out = stdout("2026-04-03T12:00:00Z", &["-j", "-t", "utc"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v[0]["translated"], "2026-04-03T12:00:00Z");
 }
 
 #[test]
@@ -502,7 +580,7 @@ fn an_invalid_line_does_not_stop_the_valid_ones() {
 fn in_place_edit_keeps_bytes_it_cannot_decode() {
     // `-i` used to abort on the whole file ("stream did not contain valid
     // UTF-8") and leave it untranslated.
-    let path = std::env::temp_dir().join("tztr-inplace-bytes.log");
+    let path = temp_path("tztr-inplace-bytes");
     std::fs::write(&path, b"2026-04-03T12:00:00Z \xff\xfe junk\n").unwrap();
     let o = run_tz(
         b"",
