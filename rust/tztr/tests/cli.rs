@@ -231,6 +231,45 @@ fn aborts_on_unparseable_date() {
     assert!(!ok);
 }
 
+// --- B10: one documented set of -d date forms -------------------------------
+
+#[test]
+fn accepts_the_documented_date_forms() {
+    for date in [
+        "2026-01-15",
+        "2026/01/15",
+        "20260115",
+        "January 15, 2026",
+        "Jan 15 2026",
+        "15 January 2026",
+    ] {
+        assert_eq!(
+            stdout("15:30 PST", &["-t", "utc", "-d", date]),
+            "23:30 UTC",
+            "{date}"
+        );
+    }
+}
+
+#[test]
+fn rejects_dates_outside_that_set_and_dates_that_do_not_exist() {
+    for date in [
+        "2026-02-30", // April has 30 days, February does not
+        "2026-13-01",
+        "2026-00-10",
+        "not-a-date",
+        "01/15/2026", // ambiguous day-first/month-first
+        "15-01-2026",
+        "2026-01-15T00:00:00Z",
+    ] {
+        assert_eq!(
+            fails("15:30 PST\n", &["-t", "utc", "-d", date]),
+            format!("tztr: invalid date: {date}"),
+            "{date}"
+        );
+    }
+}
+
 // --- B8: non-UTF-8 input keeps its bytes ------------------------------------
 
 #[test]

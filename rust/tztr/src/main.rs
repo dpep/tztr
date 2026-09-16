@@ -1,6 +1,7 @@
 //! `tztr` CLI — Rust port of `bin/tztr`. Kept functionally identical to the
 //! Ruby reference (same flags, output, and behavior); see CLAUDE.md.
 
+use jiff::civil::Date;
 use serde_json::{json, Map, Value};
 use std::collections::VecDeque;
 use std::env;
@@ -440,41 +441,41 @@ fn help_doc() -> Value {
     })
 }
 
-/// Normalize a flexible date string to `YYYY-MM-DD`, or `None` if unparseable.
-/// Covers the common forms Ruby's `Date.parse` accepts for our use; ambiguous
-/// day-first slash dates (e.g. `1/15/2026`) are rejected, as in Ruby.
+/// Normalize a `-d` date to `YYYY-MM-DD`, or `None` if it is not one of the
+/// documented forms — `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYYMMDD`, `Month D, YYYY`,
+/// `D Month YYYY`. Ambiguous day-first/month-first slash dates (`1/15/2026`)
+/// are rejected rather than guessed at.
 fn normalize_date(input: &str) -> Option<String> {
     use regex::Regex;
     let input = input.trim();
 
-    // ISO and year-first slash: YYYY-MM-DD / YYYY/MM/DD
-    let iso = Regex::new(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$").unwrap();
-    if let Some(c) = iso.captures(input) {
-        return build_date(&c[1], c[2].parse().ok()?, c[3].parse().ok()?);
+    // YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD
+    let ymd = Regex::new(r"^(\d{4})(?:[-/](\d{1,2})[-/](\d{1,2})|(\d{2})(\d{2}))$").unwrap();
+    if let Some(c) = ymd.captures(input) {
+        let group = |a: usize, b: usize| c.get(a).or_else(|| c.get(b));
+        return build_date(&c[1], group(2, 4)?.as_str(), group(3, 5)?.as_str());
     }
 
-    // "Month D, YYYY" / "Month D YYYY"
+    // "Month D, YYYY" / "Mon D YYYY"
     let mdy = Regex::new(r"(?i)^([a-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})$").unwrap();
     if let Some(c) = mdy.captures(input) {
-        let month = month_number(&c[1])?;
-        return build_date(&c[3], month, c[2].parse().ok()?);
+        return build_date(&c[3], &month_number(&c[1])?.to_string(), &c[2]);
     }
 
     // "D Month YYYY"
     let dmy = Regex::new(r"(?i)^(\d{1,2})\s+([a-z]+)\.?,?\s+(\d{4})$").unwrap();
     if let Some(c) = dmy.captures(input) {
-        let month = month_number(&c[2])?;
-        return build_date(&c[3], month, c[1].parse().ok()?);
+        return build_date(&c[3], &month_number(&c[2])?.to_string(), &c[1]);
     }
 
     None
 }
 
-fn build_date(year: &str, month: u32, day: u32) -> Option<String> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    Some(format!("{year}-{month:02}-{day:02}"))
+/// Format the date, rejecting one the calendar does not have — `2026-02-30`
+/// used to pass a day <= 31 check and then silently no-op downstream.
+fn build_date(year: &str, month: &str, day: &str) -> Option<String> {
+    let date = Date::new(year.parse().ok()?, month.parse().ok()?, day.parse().ok()?).ok()?;
+    Some(date.strftime("%Y-%m-%d").to_string())
 }
 
 fn month_number(name: &str) -> Option<u32> {
