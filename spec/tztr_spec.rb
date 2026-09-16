@@ -592,6 +592,30 @@ RSpec.describe Tztr do
         .to eq("tztr: /tmp/tztr-does-not-exist.txt: No such file or directory (os error 2)")
     end
 
+    it "rejects an abbreviated long option" do
+      expect(run_fail("--jso", input: "15:30 UTC")).to eq("tztr: invalid option: --jso")
+      expect(run_fail("--verb", "-t", "utc", input: "15:30 UTC")).to eq("tztr: invalid option: --verb")
+    end
+
+    it "rejects an unknown option without suggesting an alternative" do
+      expect(run_fail("--tox", "utc", input: "15:30 UTC")).to eq("tztr: invalid option: --tox")
+      expect(run_fail("--f", "utc", input: "15:30 UTC")).to eq("tztr: invalid option: --f")
+    end
+
+    it "reports a missing flag argument" do
+      expect(run_fail("-t", input: "15:30 UTC")).to eq("tztr: missing argument for -t")
+      expect(run_fail("--to", input: "15:30 UTC")).to eq("tztr: missing argument for --to")
+    end
+
+    it "accepts only the exact format spellings" do
+      expect(run_fail("-F", "bogus", input: "15:30 UTC"))
+        .to eq("tztr: invalid format: bogus (expected iso, short, time)")
+      expect(run_fail("-F", "i", input: "15:30 UTC"))
+        .to eq("tztr: invalid format: i (expected iso, short, time)")
+      expect(run_fail("-F", "", input: "15:30 UTC"))
+        .to eq("tztr: invalid format:  (expected iso, short, time)")
+    end
+
     it "reports an unknown flag without a backtrace" do
       expect(run_fail("--bogus")).to eq("tztr: invalid option: --bogus")
     end
