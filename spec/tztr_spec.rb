@@ -64,14 +64,9 @@ RSpec.describe Tztr do
       expect(result).to eq("from 08:30 PDT to 09:45 PDT")
     end
 
-    it "formats as short with abbreviation when not local" do
+    it "formats as short with abbreviation" do
       expect(Tztr.translate("2026-04-03T12:00:00Z", to: "America/Los_Angeles", format: :short))
         .to eq("2026-04-03 05:00 PDT")
-    end
-
-    it "formats as short without zone when local" do
-      expect(Tztr.translate("2026-04-03T12:00:00Z", to: "America/Los_Angeles", format: :short, local: true))
-        .to eq("2026-04-03 05:00")
     end
 
     it "formats as short with UTC label when target is UTC" do
@@ -101,6 +96,67 @@ RSpec.describe Tztr do
 
     it "passes through lines without timestamps" do
       expect(Tztr.translate("no timestamps here")).to eq("no timestamps here")
+    end
+  end
+
+  describe "zone abbreviation allowlist" do
+    it "leaves a log level after a bare time untouched" do
+      expect(Tztr.translate("15:30 INFO server started", to: "UTC"))
+        .to eq("15:30 UTC INFO server started")
+    end
+
+    it "leaves a log level after a full timestamp untouched" do
+      expect(Tztr.translate("2026-04-03 12:00:00 ERROR db failed", to: "UTC"))
+        .to eq("2026-04-03 12:00:00 UTC ERROR db failed")
+    end
+
+    it "converts from an abbreviation Time.parse cannot resolve" do
+      expect(Tztr.translate("15:30 JST", to: "UTC")).to eq("06:30 UTC")
+    end
+
+    it "follows DST for an abbreviation resolved through an IANA zone" do
+      expect(Tztr.translate("15:30 CET", to: "UTC", date: "2026-01-15")).to eq("14:30 UTC")
+      expect(Tztr.translate("15:30 CET", to: "UTC", date: "2026-07-15")).to eq("13:30 UTC")
+    end
+
+    it "does not report a log level as a timezone" do
+      expect(Tztr.matches("2026-04-03 12:00:00 ERROR db failed", detect: true))
+        .to eq([{ original: "2026-04-03 12:00:00", detected_format: "datetime", detected_tz: nil }])
+    end
+  end
+
+  describe "12-hour times" do
+    it "maps the meridiem, including the midnight and noon boundaries" do
+      expect(Tztr.translate("11:30:00 PM", to: "UTC")).to eq("23:30:00 UTC")
+      expect(Tztr.translate("12:30:00 AM", to: "UTC")).to eq("00:30:00 UTC")
+      expect(Tztr.translate("12:30:00 PM", to: "UTC")).to eq("12:30:00 UTC")
+      expect(Tztr.translate("1:00:00 PM", to: "UTC")).to eq("13:00:00 UTC")
+    end
+
+    it "converts a 12-hour time carrying a date" do
+      expect(Tztr.translate("2026-04-03 03:45:00 PM", to: "UTC"))
+        .to eq("2026-04-03 15:45:00 UTC")
+    end
+
+    it "converts a 12-hour time carrying a zone" do
+      expect(Tztr.translate("3:45 PM PST", to: "UTC")).to eq("23:45 UTC")
+    end
+
+    it "accepts a dotted meridiem" do
+      expect(Tztr.translate("11:30 p.m.", to: "UTC")).to eq("23:30 UTC.")
+    end
+  end
+
+  describe "out-of-range fields" do
+    it "normalizes a time that overflows into the next day" do
+      expect(Tztr.translate("24:00 UTC", to: "UTC")).to eq("00:00 UTC")
+      expect(Tztr.translate("23:59:60 UTC", to: "UTC")).to eq("00:00:00 UTC")
+    end
+
+    it "leaves an impossible calendar date alone" do
+      expect(Tztr.translate("2026-02-30T12:00:00Z", to: "UTC")).to eq("2026-02-30T12:00:00Z")
+      expect(Tztr.translate("2026-02-29T12:00:00Z", to: "UTC")).to eq("2026-02-29T12:00:00Z")
+      expect(Tztr.translate("2026-13-03T12:00:00Z", to: "UTC")).to eq("2026-13-03T12:00:00Z")
     end
   end
 
@@ -158,6 +214,23 @@ RSpec.describe Tztr do
         .to eq("22:30 UTC")
     end
 
+    it "picks the earlier occurrence of a repeated fall-back hour" do
+      expect(Tztr.translate("2026-11-01 01:30:00", from: "America/New_York", to: "UTC"))
+        .to eq("2026-11-01 05:30:00 UTC")
+      expect(Tztr.translate("2026-10-25 02:30:00", from: "Europe/Berlin", to: "UTC"))
+        .to eq("2026-10-25 00:30:00 UTC")
+    end
+
+    it "picks the earlier occurrence for a time-only input too" do
+      expect(Tztr.translate("01:30", from: "America/New_York", to: "UTC", date: "2026-11-01"))
+        .to eq("05:30 UTC")
+    end
+
+    it "leaves the nonexistent spring-forward hour alone" do
+      expect(Tztr.translate("2026-03-08 02:30:00", from: "America/New_York", to: "UTC"))
+        .to eq("2026-03-08 07:30:00 UTC")
+    end
+
     it "ignores the date for inputs that already carry one" do
       expect(Tztr.translate("2026-07-15T12:00:00Z", to: "UTC", date: "2026-01-15"))
         .to eq("2026-07-15T12:00:00Z")
@@ -170,6 +243,15 @@ RSpec.describe Tztr do
       expect(Tztr.resolve_tz("PST")).to eq("America/Los_Angeles")
       expect(Tztr.resolve_tz("est")).to eq("America/New_York")
       expect(Tztr.resolve_tz("utc")).to eq("UTC")
+    end
+
+    it "resolves gmt to UTC, not to British Summer Time" do
+      expect(Tztr.resolve_tz("gmt")).to eq("UTC")
+      expect(Tztr.translate("2026-07-15T12:00:00Z", to: "gmt")).to eq("2026-07-15T12:00:00Z")
+    end
+
+    it "keeps bst as UK civil time" do
+      expect(Tztr.resolve_tz("bst")).to eq("Europe/London")
     end
 
     it "resolves city names" do
@@ -190,8 +272,45 @@ RSpec.describe Tztr do
       expect(Tztr.resolve_tz("America/Chicago")).to eq("America/Chicago")
     end
 
+    it "rejects a name no timezone database knows" do
+      expect { Tztr.resolve_tz("Bogus/Zone") }.to raise_error(Tztr::Error, "unknown timezone: Bogus/Zone")
+      expect { Tztr.resolve_tz("America/New York") }.to raise_error(Tztr::Error)
+      expect { Tztr.resolve_tz("") }.to raise_error(Tztr::Error)
+    end
+
+    it "bounds numeric offsets to the zones that exist" do
+      expect(Tztr.resolve_tz("14")).to eq("Etc/GMT-14")
+      expect { Tztr.resolve_tz("15") }.to raise_error(Tztr::Error, "offset out of range: 15 (expected -12..14)")
+      expect { Tztr.resolve_tz("-13") }.to raise_error(Tztr::Error)
+    end
+
+    it "rejects a sub-hour numeric offset rather than mis-signing it" do
+      expect { Tztr.resolve_tz("+5:30") }.to raise_error(Tztr::Error, "unknown timezone: +5:30")
+    end
+
     it "handles nil" do
       expect(Tztr.resolve_tz(nil)).to be_nil
+    end
+  end
+
+  describe ".normalize_date" do
+    it "accepts the documented forms" do
+      expect(Tztr.normalize_date("2026-01-15")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("2026/01/15")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("20260115")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("January 15, 2026")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("Jan 15 2026")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("15 January 2026")).to eq("2026-01-15")
+    end
+
+    it "rejects a date that never happened" do
+      expect { Tztr.normalize_date("2026-02-30") }.to raise_error(Tztr::Error, "invalid date: 2026-02-30")
+    end
+
+    it "rejects forms outside the documented set" do
+      expect { Tztr.normalize_date("15/01/2026") }.to raise_error(Tztr::Error)
+      expect { Tztr.normalize_date("Mar 3") }.to raise_error(Tztr::Error)
+      expect { Tztr.normalize_date("not-a-date") }.to raise_error(Tztr::Error)
     end
   end
 
@@ -235,6 +354,13 @@ RSpec.describe Tztr do
       out.chomp
     end
 
+    def run_fail(*args, input: "")
+      out, err, status = Open3.capture3({ "TZ" => nil }, TZTR, *args, stdin_data: input)
+      expect(status).not_to be_success
+      expect(out).to be_empty
+      err.chomp
+    end
+
     it "converts via stdin" do
       expect(run("2026-04-03T12:00:00Z", "-t", "America/Los_Angeles"))
         .to eq("2026-04-03T05:00:00-07:00")
@@ -249,6 +375,15 @@ RSpec.describe Tztr do
 
     it "uses TZ env var as default output" do
       expect(run("2026-04-03T12:00:00Z", env: { "TZ" => "America/New_York" }))
+        .to eq("2026-04-03T08:00:00-04:00")
+    end
+
+    it "treats an empty TZ as unset" do
+      expect(run("2026-04-03T12:00:00Z", env: { "TZ" => "" })).to eq("2026-04-03T12:00:00Z")
+    end
+
+    it "honors the POSIX leading colon in TZ" do
+      expect(run("2026-04-03T12:00:00Z", env: { "TZ" => ":America/New_York" }))
         .to eq("2026-04-03T08:00:00-04:00")
     end
 
@@ -390,8 +525,87 @@ RSpec.describe Tztr do
     end
 
     it "aborts on an unparseable date" do
-      out, status = Open3.capture2(TZTR, "-d", "not-a-date", stdin_data: "15:30 PST")
+      expect(run_fail("-d", "not-a-date", input: "15:30 PST")).to eq("tztr: invalid date: not-a-date")
+    end
+
+    it "aborts on a date that never happened" do
+      expect(run_fail("-d", "2026-02-30", input: "15:30 PST")).to eq("tztr: invalid date: 2026-02-30")
+    end
+
+    it "labels the zone in short format even when it is the default one" do
+      expect(run("2026-04-03T12:00:00Z", "-F", "short")).to eq("2026-04-03 12:00 UTC")
+      expect(run("2026-04-03T12:00:00Z", "-F", "short", env: { "TZ" => "America/Los_Angeles" }))
+        .to eq("2026-04-03 05:00 PDT")
+    end
+
+    it "accepts the -- terminator" do
+      expect(run("2026-04-03T12:00:00Z", "-t", "utc", "--")).to eq("2026-04-03T12:00:00Z")
+    end
+
+    it "discloses with -v what a bare timestamp assumed" do
+      _, err, = Open3.capture3(
+        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", stdin_data: "15:30\n"
+      )
+      expect(err).to include("tztr: from=America/Los_Angeles (implicit, from $TZ) to=America/New_York")
+      expect(err).to match(/^tztr: no -d given, assuming \d{4}-\d{2}-\d{2} for DST resolution$/)
+    end
+
+    it "says nothing about assumptions it did not make" do
+      _, err, = Open3.capture3(
+        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", "-f", "utc", "-d", "2026-01-15",
+        stdin_data: "15:30\n"
+      )
+      expect(err).not_to include("implicit")
+      expect(err).not_to include("assuming")
+    end
+
+    it "keeps stdout clean while disclosing under -j" do
+      out, err, = Open3.capture3(
+        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", "-j", stdin_data: "15:30\n"
+      )
+      expect(JSON.parse(out).first["original"]).to eq("15:30")
+      expect(err).to include("implicit, from $TZ")
+    end
+
+    it "reports a missing file without a backtrace" do
+      expect(run_fail("/tmp/tztr-does-not-exist.txt"))
+        .to eq("tztr: No such file or directory (os error 2)")
+    end
+
+    it "reports a directory argument without a backtrace" do
+      expect(run_fail("/tmp")).to eq("tztr: Is a directory (os error 21)")
+    end
+
+    it "reports an unknown flag without a backtrace" do
+      expect(run_fail("--bogus")).to eq("tztr: invalid option: --bogus")
+    end
+
+    it "preserves bytes that are not valid UTF-8" do
+      input = "2026-04-03T12:00:00Z \xff\xfe junk\n2026-04-03T13:00:00Z ok\n".b
+      out, _, status = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "pst", stdin_data: input)
+      expect(status).to be_success
+      expect(out.b)
+        .to eq("2026-04-03T05:00:00-07:00 \xff\xfe junk\n2026-04-03T06:00:00-07:00 ok\n".b)
+    end
+
+    it "aborts on an unresolvable timezone" do
+      expect(run_fail("-t", "Bogus/Zone", input: "2026-04-03T12:00:00Z"))
+        .to eq("tztr: unknown timezone: Bogus/Zone")
+    end
+
+    it "aborts on an out-of-range numeric offset" do
+      expect(run_fail("-t", "15")).to eq("tztr: offset out of range: 15 (expected -12..14)")
+    end
+
+    it "aborts on a sub-hour numeric offset" do
+      expect(run_fail("-t", "+5:30")).to eq("tztr: unknown timezone: +5:30")
+    end
+
+    it "aborts on an unresolvable TZ" do
+      out, err, status = Open3.capture3({ "TZ" => "Bogus/Zone" }, TZTR, stdin_data: "15:30")
       expect(status).not_to be_success
+      expect(out).to be_empty
+      expect(err.chomp).to eq("tztr: unknown timezone: Bogus/Zone")
     end
 
     it "applies the reference date inside JSON output" do
