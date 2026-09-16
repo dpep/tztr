@@ -252,7 +252,9 @@ module Tztr
     zone = aliased_zone(abbr)
 
     if zone
-      in_zone(str.sub(/ ?#{abbr}\z/, ''), zone, to)
+      # Strip the abbreviation: left in place, Time.parse's own zone table
+      # would win over the IANA zone we just resolved it to.
+      in_zone(str.delete_suffix(abbr).rstrip, zone, to)
     elsif abbr
       Time.parse(str)
     elsif from
