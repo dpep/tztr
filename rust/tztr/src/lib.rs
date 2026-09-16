@@ -186,7 +186,6 @@ pub fn translate(
     to: &str,
     from: Option<&str>,
     format: Option<Format>,
-    local: bool,
     date: Option<&str>,
 ) -> String {
     let to_tz = resolve_zone(to);
@@ -197,7 +196,7 @@ pub fn translate(
             return pattern
                 .replace_all(line, |caps: &regex::Captures| {
                     let m = &caps[0];
-                    convert_match(m, from_tz.as_ref(), &to_tz, format, local, date)
+                    convert_match(m, from_tz.as_ref(), &to_tz, format, date)
                         .unwrap_or_else(|| m.to_string())
                 })
                 .into_owned();
@@ -209,13 +208,11 @@ pub fn translate(
 
 /// Per-match structured analysis of a line. With `detect`, translation is
 /// skipped and [`Match::translated`] is `None`. Mirrors `Tztr.matches`.
-#[allow(clippy::too_many_arguments)]
 pub fn matches(
     line: &str,
     to: &str,
     from: Option<&str>,
     format: Option<Format>,
-    local: bool,
     detect: bool,
     date: Option<&str>,
 ) -> Vec<Match> {
@@ -230,7 +227,7 @@ pub fn matches(
                 let translated = if detect {
                     None
                 } else {
-                    convert_match(original, from_tz.as_ref(), &to_tz, format, local, date)
+                    convert_match(original, from_tz.as_ref(), &to_tz, format, date)
                 };
                 results.push(Match {
                     original: original.to_string(),
@@ -251,11 +248,10 @@ fn convert_match(
     from_tz: Option<&TimeZone>,
     to_tz: &TimeZone,
     format: Option<Format>,
-    local: bool,
     date: Option<&str>,
 ) -> Option<String> {
     let zoned = parse(m, from_tz, to_tz, date)?;
-    Some(format_time(&zoned, format, m, local))
+    Some(format_time(&zoned, format, m))
 }
 
 /// Label the detected format. Mirrors `Tztr.detect_format`.
@@ -464,7 +460,7 @@ fn hour_minute_re() -> &'static Regex {
 
 /// Rebuild the output to mirror the original match (or honor an explicit
 /// format). Mirrors `Tztr.format_time`.
-fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str, local: bool) -> String {
+fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
     let offset_secs = zoned.offset().seconds();
     let tz = if offset_secs == 0 {
         "Z".to_string()
@@ -476,13 +472,9 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str, local: bool) 
     match fmt {
         Some(Format::Time) => return strf(zoned, "%H:%M:%S"),
         Some(Format::Iso) => return format!("{}{}", strf(zoned, "%Y-%m-%d %H:%M:%S"), tz),
-        Some(Format::Short) => {
-            let base = strf(zoned, "%Y-%m-%d %H:%M");
-            if local {
-                return base;
-            }
-            return format!("{base} {abbrev}");
-        }
+        // Always labelled: a cross-timezone tool whose output does not say
+        // which zone it is in is not useful, and this output gets pasted.
+        Some(Format::Short) => return format!("{} {abbrev}", strf(zoned, "%Y-%m-%d %H:%M")),
         None => {}
     }
 
@@ -531,7 +523,7 @@ mod tests {
     use super::*;
 
     fn tr(line: &str, to: &str) -> String {
-        translate(line, to, None, None, false, None)
+        translate(line, to, None, None, None)
     }
 
     #[test]
@@ -603,25 +595,9 @@ mod tests {
                 "America/Los_Angeles",
                 None,
                 Some(Format::Short),
-                false,
                 None
             ),
             "2026-04-03 05:00 PDT"
-        );
-    }
-
-    #[test]
-    fn formats_as_short_without_zone_when_local() {
-        assert_eq!(
-            translate(
-                "2026-04-03T12:00:00Z",
-                "America/Los_Angeles",
-                None,
-                Some(Format::Short),
-                true,
-                None
-            ),
-            "2026-04-03 05:00"
         );
     }
 
@@ -633,7 +609,6 @@ mod tests {
                 "America/Los_Angeles",
                 None,
                 Some(Format::Iso),
-                false,
                 None
             ),
             "2026-04-03 05:00:00-07:00"
@@ -648,7 +623,6 @@ mod tests {
                 "America/Los_Angeles",
                 None,
                 Some(Format::Time),
-                false,
                 None
             ),
             "05:00:00"
@@ -663,7 +637,6 @@ mod tests {
                 "UTC",
                 Some("America/Los_Angeles"),
                 None,
-                false,
                 None
             ),
             "2026-04-03T19:00:00Z"
@@ -762,7 +735,6 @@ mod tests {
             None,
             None,
             false,
-            false,
             None,
         );
         assert_eq!(m.len(), 1);
@@ -777,7 +749,7 @@ mod tests {
 
     #[test]
     fn matches_detect_omits_translated() {
-        let m = matches("15:30 PST", "UTC", None, None, false, true, None);
+        let m = matches("15:30 PST", "UTC", None, None, true, None);
         assert_eq!(m[0].detected_format, "time");
         assert_eq!(m[0].detected_tz.as_deref(), Some("PST"));
         assert_eq!(m[0].translated, None);
@@ -792,7 +764,6 @@ mod tests {
                 "UTC",
                 Some("America/Los_Angeles"),
                 None,
-                false,
                 Some("2026-01-15")
             ),
             "23:30 UTC"
@@ -804,7 +775,6 @@ mod tests {
                 "UTC",
                 Some("America/Los_Angeles"),
                 None,
-                false,
                 Some("2026-07-15")
             ),
             "22:30 UTC"
@@ -814,7 +784,7 @@ mod tests {
     // --- B1: zone detection is an allowlist, not [A-Z]{2,4} ----------------
 
     fn tr_on(line: &str, to: &str, date: &str) -> String {
-        translate(line, to, None, None, false, Some(date))
+        translate(line, to, None, None, Some(date))
     }
 
     #[test]
@@ -884,7 +854,7 @@ mod tests {
 
     #[test]
     fn meridiem_is_not_read_as_a_zone() {
-        let m = matches("11:30:00 PM", "UTC", None, None, false, true, None);
+        let m = matches("11:30:00 PM", "UTC", None, None, true, None);
         assert_eq!(m[0].original, "11:30:00 PM");
         assert_eq!(m[0].detected_tz, None);
     }
@@ -905,9 +875,9 @@ mod tests {
 
     #[test]
     fn detected_zone_is_the_one_that_converted() {
-        let m = matches("15:30 JST", "UTC", None, None, false, false, None);
+        let m = matches("15:30 JST", "UTC", None, None, false, None);
         assert_eq!(m[0].detected_tz.as_deref(), Some("JST"));
-        let m = matches("15:30 INFO", "UTC", None, None, false, false, None);
+        let m = matches("15:30 INFO", "UTC", None, None, false, None);
         assert_eq!(m[0].original, "15:30");
         assert_eq!(m[0].detected_tz, None);
     }
@@ -928,14 +898,7 @@ mod tests {
             today.day()
         );
         assert_eq!(
-            translate(
-                "15:30 UTC",
-                "Etc/GMT+5",
-                None,
-                Some(Format::Iso),
-                false,
-                None
-            ),
+            translate("15:30 UTC", "Etc/GMT+5", None, Some(Format::Iso), None),
             expected
         );
     }

@@ -231,6 +231,29 @@ fn aborts_on_unparseable_date() {
     assert!(!ok);
 }
 
+// --- B14: `-F short` always says which zone ---------------------------------
+
+#[test]
+fn short_format_always_labels_the_zone() {
+    // The zone label used to be dropped whenever the output zone happened to
+    // equal $TZ -- which is every invocation that simply omits `-t`. This
+    // output gets pasted into tickets; it has to say which zone it is in.
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["-F", "short"]),
+        "2026-04-03 12:00 UTC"
+    );
+    let o = run_tz(b"2026-04-03T12:00:00Z\n", &["-F", "short"], None);
+    assert_eq!(o.out().trim_end(), "2026-04-03 12:00 UTC");
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["-F", "short", "-t", "nyc"]),
+        "2026-04-03 08:00 EDT"
+    );
+    // ...including inside structured output.
+    let json = stdout("2026-04-03T12:00:00Z", &["-F", "short", "-j"]);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v[0]["translated"], "2026-04-03 12:00 UTC");
+}
+
 // --- B4/B5/B13: an unresolvable timezone is a hard error --------------------
 
 #[test]

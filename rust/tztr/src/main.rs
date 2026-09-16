@@ -48,7 +48,6 @@ struct Options {
     to: String,
     format: Option<Format>,
     date: Option<String>,
-    local: bool,
     inplace: bool,
     json: bool,
     ndjson: bool,
@@ -174,7 +173,6 @@ fn run() -> Result<ExitCode, String> {
         Some(f) => Some(zone(f)?),
         None => None,
     };
-    let local = to == zone(local_tz.as_deref().unwrap_or("UTC"))?;
 
     let date = match date {
         Some(d) => Some(normalize_date(&d).ok_or_else(|| format!("invalid date: {d}"))?),
@@ -186,7 +184,6 @@ fn run() -> Result<ExitCode, String> {
         to,
         format,
         date,
-        local,
         inplace,
         json,
         ndjson,
@@ -233,7 +230,6 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
                     &opts.to,
                     opts.from.as_deref(),
                     opts.format,
-                    opts.local,
                     opts.date.as_deref(),
                 )
             })
@@ -293,7 +289,6 @@ fn handle_line(
             &opts.to,
             opts.from.as_deref(),
             opts.format,
-            opts.local,
             opts.detect,
             opts.date.as_deref(),
         );
@@ -305,15 +300,7 @@ fn handle_line(
             collected.extend(ms);
         }
     } else if opts.detect {
-        for m in matches(
-            line,
-            &opts.to,
-            opts.from.as_deref(),
-            None,
-            false,
-            true,
-            None,
-        ) {
+        for m in matches(line, &opts.to, opts.from.as_deref(), None, true, None) {
             writeln!(
                 out,
                 "{}\t{}\t{}",
@@ -331,7 +318,6 @@ fn handle_line(
                 &opts.to,
                 opts.from.as_deref(),
                 opts.format,
-                opts.local,
                 opts.date.as_deref(),
             )
         )?;
