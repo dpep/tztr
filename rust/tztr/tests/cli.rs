@@ -370,6 +370,26 @@ fn verbose_discloses_each_assumption_the_first_time_it_is_made() {
 }
 
 #[test]
+fn verbose_discloses_under_in_place_too() {
+    // -i rewrites the file on the strength of these assumptions, so it has
+    // more reason to state them, not less.
+    let path = temp_path("tztr-inplace-verbose");
+    std::fs::write(&path, "15:30\n").unwrap();
+    let o = run_tz(
+        b"",
+        &["-i", "-v", "-t", "nyc", path.to_str().unwrap()],
+        Some("America/Los_Angeles"),
+    );
+    let written = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    assert!(o.ok, "{}", o.stderr);
+    assert!(o.stderr.contains("(implicit, from $TZ)"), "{}", o.stderr);
+    assert!(o.stderr.contains("no -d given"), "{}", o.stderr);
+    assert_ne!(written, "15:30\n", "file should have been translated");
+}
+
+#[test]
 fn verbose_stays_quiet_when_nothing_was_assumed() {
     // -f and -d given: both assumptions are the user's, not ours.
     let o = verbose_bare(&["-v", "-f", "pst", "-t", "nyc", "-d", "2026-01-15"]);
