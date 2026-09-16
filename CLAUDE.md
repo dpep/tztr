@@ -56,7 +56,7 @@ A few things that aren't obvious from a quick read:
 **Timezone resolution has three layers** (`Tztr.resolve_tz`):
 1. Numeric offset string (e.g. `"-7"`) → `Etc/GMT±N` — note the POSIX sign inversion (`-7` becomes `Etc/GMT+7`).
 2. Lowercased + underscored lookup in `TIMEZONE_ALIASES` (covers tz abbreviations like `pst`, plus city nicknames like `sf`, `nyc`).
-3. Pass-through — assumed to be a valid IANA name like `America/Los_Angeles`.
+3. Validated against the system tzdb as an IANA name like `America/Los_Angeles` — an unknown name raises `Tztr::Error` rather than passing through.
 
 **Output format preservation** (`format_time`) inspects the *original* matched substring and rebuilds the output to mirror it (ISO `T`, space-separated, time-only, with/without fractional seconds). Explicit `--format iso|short|time` short-circuits this.
 

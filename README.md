@@ -22,7 +22,7 @@ echo '2026-04-03T12:00:00Z' | tztr -t America/Los_Angeles
 # 2026-04-03T05:00:00-07:00
 
 echo '15:30 UTC' | tztr -t America/New_York
-# 11:30 EDT
+# 11:30 EDT   (a time with no date resolves against today; in January, 10:30 EST)
 
 tail -f app.log | tztr
 ```
@@ -44,12 +44,35 @@ tail -f app.log | tztr
 -h, --help          Show this help
 ```
 
+### Timezones
+
+`-f` and `-t` take an IANA name (`America/Los_Angeles`), an alias or
+abbreviation (`pst`, `nyc`, `jst` — `tztr -l` lists all of them), or a
+whole-hour numeric offset from `-12` to `14` (`-8` → `Etc/GMT+8`). Sub-hour
+offsets are not accepted; reach a half-hour zone by name: `-t ist`,
+`-t Asia/Kolkata`.
+
+`gmt` means UTC. For civil UK time, which follows British Summer Time, use
+`-t london`.
+
+A zone that can't be resolved is an error — exit 1, nothing on stdout:
+
+```bash
+echo '15:30 UTC' | tztr -t Mars/Phobos
+# tztr: unknown timezone: Mars/Phobos
+```
+
 ### Supported Formats
 
 - ISO 8601: `2026-04-03T12:00:00Z`, `2026-04-03T12:00:00+05:30`
 - Date + time: `2026-04-03 12:00:00 UTC`
 - Time only: `15:30 UTC`, `08:30:45 PDT`
+- 12-hour: `11:30 PM`, `3:45 p.m.`, `3:45 PM PST`
 - Fractional seconds: `2026-04-03T12:00:00.123Z`
+
+One dent in the format-preserving promise: a date paired with a 12-hour time
+and no seconds gains a seconds field it never had — `2026-04-03 3:45 PM`
+converts to `2026-04-03 15:45:00 UTC`.
 
 ### JSON output (for agents & scripts)
 
@@ -97,20 +120,31 @@ echo '2026-04-03T12:00:00Z' | tztr
 
 ### Caveat: time-only inputs and DST
 
-A time-only input carries no date, so a DST-observing zone can't tell whether
-it was standard or daylight time. When you pair a bare time with a named source
-zone, `tztr` resolves it against **today's** date — which can be off by an hour
-for a timestamp from the other side of a DST boundary:
+A time-only input carries no date, so a DST-observing zone on either side of
+the conversion can't tell whether it was standard or daylight time. `tztr`
+resolves it against **today's** date — which can be off by an hour for a
+timestamp from the other side of a DST boundary:
 
 ```bash
 echo '15:30' | tztr -f pacific -t utc
-# 22:30 UTC   (today is summer, so pacific -> PDT, UTC-7)
+# 22:30 UTC   (run in summer: pacific -> PDT, UTC-7. In January: 23:30 UTC)
 ```
 
-Two ways to handle it:
+`-v` names the guess on stderr whenever a bare timestamp forces one:
 
 ```bash
-# Supply the date the time belongs to (accepts flexible formats):
+echo '15:30' | tztr -f pacific -t utc -v
+# tztr: from=America/Los_Angeles to=UTC
+# tztr: no -d given, assuming 2026-09-16 for DST resolution   (whatever today is)
+# 22:30 UTC
+```
+
+With no `-f`, it also names the source zone it borrowed from `$TZ`.
+
+Two ways to remove the guess:
+
+```bash
+# Supply the date the time belongs to:
 echo '15:30' | tztr -f pacific -t utc -d 2026-01-15
 # 23:30 UTC   (January -> PST, UTC-8)
 echo '15:30' | tztr -f pacific -t utc -d 'January 15, 2026'
@@ -120,8 +154,23 @@ echo '15:30' | tztr -f -8 -t utc
 # 23:30 UTC   (-8 -> Etc/GMT+8, never observes daylight time)
 ```
 
+`-d` takes one of `2026-01-15`, `2026/01/15`, `20260115`, `January 15, 2026`,
+`Jan 15 2026`, `15 January 2026`. Month names are full or exactly three letters
+(`Sep`, not `Sept`); the numeric forms need two digits for month and day.
+Anything else, including a date that isn't on the calendar, is
+`tztr: invalid date: ...` and exit 1.
+
 Inputs that already carry a date (`2026-04-03 15:30`) or a fixed offset are
 unaffected.
+
+One more DST wrinkle, for dated inputs too: a fall-back repeats an hour, so the
+same wall clock happens twice. `tztr` takes the **earlier** (daylight)
+occurrence, matching macOS `date(1)`, Temporal, RFC 5545 and ICU:
+
+```bash
+echo '2026-11-01 01:30:00' | tztr -f pacific -t utc
+# 2026-11-01 08:30:00 UTC   (01:30 PDT; the later 01:30 PST would be 09:30)
+```
 
 
 ## Library
