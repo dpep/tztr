@@ -64,14 +64,9 @@ RSpec.describe Tztr do
       expect(result).to eq("from 08:30 PDT to 09:45 PDT")
     end
 
-    it "formats as short with abbreviation when not local" do
+    it "formats as short with abbreviation" do
       expect(Tztr.translate("2026-04-03T12:00:00Z", to: "America/Los_Angeles", format: :short))
         .to eq("2026-04-03 05:00 PDT")
-    end
-
-    it "formats as short without zone when local" do
-      expect(Tztr.translate("2026-04-03T12:00:00Z", to: "America/Los_Angeles", format: :short, local: true))
-        .to eq("2026-04-03 05:00")
     end
 
     it "formats as short with UTC label when target is UTC" do
@@ -535,6 +530,12 @@ RSpec.describe Tztr do
 
     it "aborts on a date that never happened" do
       expect(run_fail("-d", "2026-02-30", input: "15:30 PST")).to eq("tztr: invalid date: 2026-02-30")
+    end
+
+    it "labels the zone in short format even when it is the default one" do
+      expect(run("2026-04-03T12:00:00Z", "-F", "short")).to eq("2026-04-03 12:00 UTC")
+      expect(run("2026-04-03T12:00:00Z", "-F", "short", env: { "TZ" => "America/Los_Angeles" }))
+        .to eq("2026-04-03 05:00 PDT")
     end
 
     it "reports a missing file without a backtrace" do

@@ -106,7 +106,6 @@ end
 begin
   options[:to] = Tztr.resolve_tz(options[:to])
   options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
-  options[:local] = options[:to] == Tztr.resolve_tz(local_tz || 'UTC')
   options[:date] = Tztr.normalize_date(options[:date]) if options[:date]
 rescue Tztr::Error => e
   abort "#{parser.program_name}: #{e.message}"
@@ -135,7 +134,7 @@ begin
     ARGV.each do |file|
       content = File.read(file)
       translated = content.each_line.map do |line|
-        Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], date: options[:date])
+        Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], date: options[:date])
       end.join
       File.write(file, translated) if translated != content
     end
@@ -146,7 +145,7 @@ begin
     inputs.each do |input|
       input.each_line do |line|
         if json_mode
-          ms = Tztr.matches(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], detect: options[:detect], date: options[:date])
+          ms = Tztr.matches(line, to: options[:to], from: options[:from], format: options[:format], detect: options[:detect], date: options[:date])
           if options[:ndjson]
             ms.each { |m| puts JSON.generate(m) }
           else
@@ -157,7 +156,7 @@ begin
             puts [m[:original], m[:detected_format], m[:detected_tz]].join("\t")
           end
         else
-          print Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], date: options[:date])
+          print Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], date: options[:date])
         end
       end
     end

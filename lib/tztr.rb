@@ -157,7 +157,7 @@ module Tztr
     ZONEINFO_DIRS.any? { |dir| File.file?(File.join(dir, name)) }
   end
 
-  def translate(line, to: 'UTC', from: nil, format: nil, local: false, date: nil)
+  def translate(line, to: 'UTC', from: nil, format: nil, date: nil)
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
@@ -167,7 +167,7 @@ module Tztr
       next unless result.match?(pattern)
 
       result.gsub!(pattern) do |match|
-        convert_match(match, from:, to:, format:, local:, date:) || match
+        convert_match(match, from:, to:, format:, date:) || match
       end
 
       break result
@@ -180,7 +180,7 @@ module Tztr
   # per detected timestamp: { original:, detected_format:, detected_tz:,
   # translated: }. With detect: true, translation is skipped and :translated is
   # omitted.
-  def matches(line, to: 'UTC', from: nil, format: nil, local: false, detect: false, date: nil)
+  def matches(line, to: 'UTC', from: nil, format: nil, detect: false, date: nil)
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
@@ -197,7 +197,7 @@ module Tztr
           detected_format: detect_format(match),
           detected_tz: detect_zone(match),
         }
-        info[:translated] = convert_match(match, from:, to:, format:, local:, date:) unless detect
+        info[:translated] = convert_match(match, from:, to:, format:, date:) unless detect
         results << info
       end
 
@@ -207,9 +207,9 @@ module Tztr
     results
   end
 
-  def convert_match(match, from:, to:, format:, local:, date: nil)
+  def convert_match(match, from:, to:, format:, date: nil)
     time = parse(match, from:, to:, date:)
-    format_time(time.localtime, format, match, local:)
+    format_time(time.localtime, format, match)
   rescue ArgumentError
     nil
   end
@@ -291,17 +291,16 @@ module Tztr
     str.match?(/\A\d{1,2}:/)
   end
 
-  def format_time(time, fmt, original, local: false)
+  def format_time(time, fmt, original)
     tz = time.utc_offset == 0 ? 'Z' : time.strftime('%:z')
 
     case fmt
     when :time then return time.strftime('%H:%M:%S')
     when :iso then return time.strftime('%Y-%m-%d %H:%M:%S') + tz
     when :short
-      base = time.strftime('%Y-%m-%d %H:%M')
-      return base if local
-
-      return base + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
+      # Always labelled: a cross-timezone tool whose output doesn't say which
+      # zone it is in gets pasted into a ticket and read wrong.
+      return time.strftime('%Y-%m-%d %H:%M') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     end
 
     # Preserve input format
