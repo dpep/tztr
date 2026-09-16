@@ -329,12 +329,11 @@ fn handle_line<W: Write>(
     raw: &[u8],
     sink: &mut Sink<W>,
 ) -> io::Result<()> {
-    let out = &mut sink.out;
     let line = match std::str::from_utf8(raw) {
         Ok(line) => line,
         Err(_) => {
             if !json_mode && !opts.detect {
-                out.write_all(&translate_bytes(
+                sink.out.write_all(&translate_bytes(
                     raw,
                     &opts.to,
                     opts.from.as_deref(),
