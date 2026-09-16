@@ -64,15 +64,29 @@ Deliberate, and excluded from the parity matrix:
   parser requires exact spellings. Making Ruby strict would mean fighting
   OptionParser; making Rust lenient is code nobody asked for. `--` itself *is*
   supported on both sides.
-- **Non-UTF-8 lines in `-j`/`-J`.** A line with an undecodable byte still has
-  its timestamps converted in the default mode, with every other byte preserved
-  exactly (`regex::bytes`, no lossy decode). In the structured modes that line
-  is dropped instead — raw bytes in a JSON stream would corrupt the document for
-  whoever is reading it.
-- **`-i` error messages carry the filename** (`tztr: app.log: No such file or
-  directory (os error 2)`) where the streaming path does not (`tztr: No such
-  file or directory (os error 2)`). The streaming path is the one the Ruby error
-  messages were matched against.
+
+Note that the parity harness compares **stdout and exit status only**
+(`script/parity.rb` discards stderr), so the error strings below are not covered
+by the gate and have to be kept in step by hand.
+## Error strings
+
+One line, no backtrace, exit 1, byte-identical with Ruby. The `-i` path uses the
+same wording as the streaming path — no filename prefix:
+
+    tztr: unknown timezone: Bogus/Zone
+    tztr: offset out of range: 15 (expected -12..14)
+    tztr: invalid date: 2026-02-30
+    tztr: No such file or directory (os error 2)
+    tztr: Is a directory (os error 21)
+    tztr: invalid option: --bogus
+
+## Known defect, deferred
+
+`EST` means two different things. Inside text it is a fixed −05:00 (that is what
+`Time.parse` does), but as `-f est` it resolves through the alias table to
+`America/New_York` and is DST-aware — the same token, an hour apart in summer.
+Same class as the abbreviation bug above; it needs its own parity pass and was
+deliberately left alone this round.
 
 ## Performance
 
