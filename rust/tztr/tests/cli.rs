@@ -289,6 +289,29 @@ fn verbose_dates_the_dst_assumption_in_the_target_zone() {
 }
 
 #[test]
+fn verbose_discloses_the_date_assumption_even_when_the_match_names_a_zone() {
+    // `15:30 UTC` into New York still has to assume a date to know whether the
+    // answer is EDT or EST -- the DST exposure is on the *output* side, so a
+    // match carrying its own zone is not off the hook.
+    let o = run_tz(b"15:30 UTC\n", &["-v", "-t", "nyc"], None);
+    assert!(o.ok, "{}", o.stderr);
+    let expected = format!(
+        "tztr: no -d given, assuming {} for DST resolution",
+        tztr::today_in_zone("America/New_York")
+    );
+    assert!(o.stderr.contains(&expected), "{}", o.stderr);
+
+    // ...and `-d` answers it, so nothing is assumed.
+    let o = run_tz(
+        b"15:30 UTC\n",
+        &["-v", "-t", "nyc", "-d", "2026-01-15"],
+        None,
+    );
+    assert!(!o.stderr.contains("no -d given"), "{}", o.stderr);
+    assert_eq!(o.out().trim_end(), "10:30 EST");
+}
+
+#[test]
 fn verbose_stays_quiet_when_nothing_was_assumed() {
     // -f and -d given: both assumptions are the user's, not ours.
     let o = verbose_bare(&["-v", "-f", "pst", "-t", "nyc", "-d", "2026-01-15"]);

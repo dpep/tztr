@@ -10,7 +10,7 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
 use tztr::{
-    has_bare_timestamp, matches_bytes, resolve_tz, timezone_aliases, today_in_zone,
+    has_dateless_timestamp, matches_bytes, resolve_tz, timezone_aliases, today_in_zone,
     translate_bytes, Format, Match,
 };
 
@@ -345,7 +345,7 @@ fn handle_line<W: Write>(
     line: &[u8],
     sink: &mut Sink<W>,
 ) -> io::Result<()> {
-    if opts.verbose && !opts.detect && !sink.disclosed && has_bare_timestamp(line) {
+    if opts.verbose && !opts.detect && !sink.disclosed && has_dateless_timestamp(line) {
         sink.disclosed = true;
         disclose_assumptions(opts);
     }
