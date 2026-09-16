@@ -20,12 +20,15 @@ module Tztr
   # Longest first, so UTC is not read as UT.
   ABBREVIATION = Regexp.union(ZONE_ABBREVIATIONS.sort_by { |abbr| [-abbr.length, abbr] })
   ZONE = /(?:#{ABBREVIATION})\b|[+-]\d{4}\b/
+  MERIDIEM = /[AaPp]\.?[Mm]\.?/
 
   PATTERNS = [
     # ISO 8601 with Z or offset: 2026-04-03T12:34:56Z, 2026-04-03T12:34:56.123+00:00
     /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/,
     # ISO 8601 without timezone: 2026-04-03T12:34:56
     /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?/,
+    # Date space 12-hour time: 2026-04-03 03:45:00 PM, 2026-04-03 03:45 PM PST
+    /\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{MERIDIEM}\b(?: ?#{ZONE})?/,
     # Date space time with tz: 2026-04-03 12:34:56 UTC
     /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? ?#{ZONE}/,
     # Date space time: 2026-04-03 12:34:56
@@ -34,6 +37,8 @@ module Tztr
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{ZONE}/,
     # Time with offset: 12:34:56+00:00
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2}:?\d{2}\b/,
+    # 12-hour time: 11:30 PM, 3:45 p.m., 3:45 PM PST
+    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{MERIDIEM}\b(?: ?#{ZONE})?/,
     # Bare time: 12:34:56, 12:34
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b/,
   ].freeze
@@ -175,6 +180,8 @@ module Tztr
     # Time-only inputs carry no date, so DST can't be resolved correctly. A
     # reference date supplies the missing context (see README caveat).
     str = "#{date} #{str}" if date && time_only?(str)
+    # Time.parse reads the "p" of "3:45 p.m." as the military zone P (-03:00).
+    str = str.sub(/([AaPp])\.([Mm])\.?/, '\1\2')
 
     abbr = detect_zone(str)
     zone = aliased_zone(abbr)

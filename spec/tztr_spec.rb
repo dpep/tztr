@@ -130,6 +130,28 @@ RSpec.describe Tztr do
     end
   end
 
+  describe "12-hour times" do
+    it "maps the meridiem, including the midnight and noon boundaries" do
+      expect(Tztr.translate("11:30:00 PM", to: "UTC")).to eq("23:30:00 UTC")
+      expect(Tztr.translate("12:30:00 AM", to: "UTC")).to eq("00:30:00 UTC")
+      expect(Tztr.translate("12:30:00 PM", to: "UTC")).to eq("12:30:00 UTC")
+      expect(Tztr.translate("1:00:00 PM", to: "UTC")).to eq("13:00:00 UTC")
+    end
+
+    it "converts a 12-hour time carrying a date" do
+      expect(Tztr.translate("2026-04-03 03:45:00 PM", to: "UTC"))
+        .to eq("2026-04-03 15:45:00 UTC")
+    end
+
+    it "converts a 12-hour time carrying a zone" do
+      expect(Tztr.translate("3:45 PM PST", to: "UTC")).to eq("23:45 UTC")
+    end
+
+    it "accepts a dotted meridiem" do
+      expect(Tztr.translate("11:30 p.m.", to: "UTC")).to eq("23:30 UTC.")
+    end
+  end
+
   describe ".matches" do
     it "returns structured info per match" do
       expect(Tztr.matches("2026-04-03T12:00:00Z", to: "America/Los_Angeles"))
