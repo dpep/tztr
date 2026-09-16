@@ -104,6 +104,32 @@ RSpec.describe Tztr do
     end
   end
 
+  describe "zone abbreviation allowlist" do
+    it "leaves a log level after a bare time untouched" do
+      expect(Tztr.translate("15:30 INFO server started", to: "UTC"))
+        .to eq("15:30 UTC INFO server started")
+    end
+
+    it "leaves a log level after a full timestamp untouched" do
+      expect(Tztr.translate("2026-04-03 12:00:00 ERROR db failed", to: "UTC"))
+        .to eq("2026-04-03 12:00:00 UTC ERROR db failed")
+    end
+
+    it "converts from an abbreviation Time.parse cannot resolve" do
+      expect(Tztr.translate("15:30 JST", to: "UTC")).to eq("06:30 UTC")
+    end
+
+    it "follows DST for an abbreviation resolved through an IANA zone" do
+      expect(Tztr.translate("15:30 CET", to: "UTC", date: "2026-01-15")).to eq("14:30 UTC")
+      expect(Tztr.translate("15:30 CET", to: "UTC", date: "2026-07-15")).to eq("13:30 UTC")
+    end
+
+    it "does not report a log level as a timezone" do
+      expect(Tztr.matches("2026-04-03 12:00:00 ERROR db failed", detect: true))
+        .to eq([{ original: "2026-04-03 12:00:00", detected_format: "datetime", detected_tz: nil }])
+    end
+  end
+
   describe ".matches" do
     it "returns structured info per match" do
       expect(Tztr.matches("2026-04-03T12:00:00Z", to: "America/Los_Angeles"))

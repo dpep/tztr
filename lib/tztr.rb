@@ -4,17 +4,34 @@ require 'time'
 require_relative 'tztr/version'
 
 module Tztr
+  # Abbreviations Ruby's Time.parse resolves on its own.
+  NATIVE_ABBREVIATIONS = %w[UT UTC GMT Z EST EDT CST CDT MST MDT PST PDT].freeze
+
+  # Abbreviations Time.parse silently ignores -- it would read them as local
+  # time, so we resolve them through TIMEZONE_ALIASES ourselves.
+  ALIASED_ABBREVIATIONS = %w[
+    ET CT MT PT HST AKST AKDT CET CEST BST IST JST KST HKT AEST AEDT NZST NZDT
+  ].freeze
+
+  # Only these count as a zone inside text. A bare [A-Z]{2,4} swallows the next
+  # word instead -- INFO, WARN, ERROR, PM.
+  ZONE_ABBREVIATIONS = (NATIVE_ABBREVIATIONS + ALIASED_ABBREVIATIONS).freeze
+
+  # Longest first, so UTC is not read as UT.
+  ABBREVIATION = Regexp.union(ZONE_ABBREVIATIONS.sort_by { |abbr| [-abbr.length, abbr] })
+  ZONE = /(?:#{ABBREVIATION})\b|[+-]\d{4}\b/
+
   PATTERNS = [
     # ISO 8601 with Z or offset: 2026-04-03T12:34:56Z, 2026-04-03T12:34:56.123+00:00
     /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/,
     # ISO 8601 without timezone: 2026-04-03T12:34:56
     /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?/,
     # Date space time with tz: 2026-04-03 12:34:56 UTC
-    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})/,
+    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? ?#{ZONE}/,
     # Date space time: 2026-04-03 12:34:56
     /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?/,
     # Time with tz: 12:34:56 UTC, 12:34 PST
-    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})\b/,
+    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{ZONE}/,
     # Time with offset: 12:34:56+00:00
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2}:?\d{2}\b/,
     # Bare time: 12:34:56, 12:34
@@ -150,7 +167,7 @@ module Tztr
   end
 
   def detect_zone(str)
-    m = str.match(/\s?(Z|[+-]\d{2}:?\d{2}|UTC|GMT|[A-Z]{2,4})\z/)
+    m = str.match(/ ?(#{ABBREVIATION}|[+-]\d{2}:?\d{2})\z/)
     m && m[1]
   end
 
@@ -159,21 +176,33 @@ module Tztr
     # reference date supplies the missing context (see README caveat).
     str = "#{date} #{str}" if date && time_only?(str)
 
-    if has_timezone?(str)
+    abbr = detect_zone(str)
+    zone = aliased_zone(abbr)
+
+    if zone
+      in_zone(str.sub(/ ?#{abbr}\z/, ''), zone, to)
+    elsif abbr
       Time.parse(str)
     elsif from
-      ENV['TZ'] = from
-      t = Time.parse(str).utc
-      ENV['TZ'] = to
-      t.localtime
+      in_zone(str, from, to)
     else
       ENV['TZ'] = to
       Time.parse(str)
     end
   end
 
-  def has_timezone?(str)
-    str.match?(/Z$|[+-]\d{2}:?\d{2}$| ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})$/)
+  # The IANA zone an abbreviation names, for the ones Time.parse can't resolve.
+  def aliased_zone(abbr)
+    return if abbr.nil? || NATIVE_ABBREVIATIONS.include?(abbr)
+
+    TIMEZONE_ALIASES[abbr.downcase]
+  end
+
+  def in_zone(str, zone, to)
+    ENV['TZ'] = zone
+    utc = Time.parse(str).utc
+    ENV['TZ'] = to
+    utc.localtime
   end
 
   def time_only?(str)
