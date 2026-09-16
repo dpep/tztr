@@ -329,6 +329,47 @@ fn verbose_discloses_the_date_assumption_even_when_the_match_names_a_zone() {
 }
 
 #[test]
+fn verbose_does_not_claim_a_source_zone_the_timestamp_carried_itself() {
+    // `15:30 UTC` took its source zone from the timestamp, not from $TZ.
+    // Saying otherwise under -v asserts something false, and -v exists to be
+    // believed. The date is still assumed, so that line stays.
+    let o = verbose_bare(&["-v", "-t", "nyc"]);
+    assert!(o.stderr.contains("(implicit, from $TZ)"), "{}", o.stderr);
+
+    let o = run_tz(
+        b"15:30 UTC\n",
+        &["-v", "-t", "nyc"],
+        Some("America/Los_Angeles"),
+    );
+    assert!(o.ok, "{}", o.stderr);
+    assert!(!o.stderr.contains("(implicit, from $TZ)"), "{}", o.stderr);
+    assert!(o.stderr.contains("no -d given"), "{}", o.stderr);
+}
+
+#[test]
+fn verbose_discloses_each_assumption_the_first_time_it_is_made() {
+    // The date is assumed on line 1, the source zone only on line 2 — each
+    // gets said once, when it first actually happens.
+    let o = run_tz(
+        b"15:30 UTC\n15:30\n15:30\n",
+        &["-v", "-t", "nyc"],
+        Some("America/Los_Angeles"),
+    );
+    assert!(o.ok, "{}", o.stderr);
+    assert_eq!(o.stderr.matches("no -d given").count(), 1, "{}", o.stderr);
+    assert_eq!(
+        o.stderr.matches("(implicit, from $TZ)").count(),
+        1,
+        "{}",
+        o.stderr
+    );
+    // ...and the date line comes first, having been assumed first.
+    let date_at = o.stderr.find("no -d given").unwrap();
+    let zone_at = o.stderr.find("(implicit, from $TZ)").unwrap();
+    assert!(date_at < zone_at, "{}", o.stderr);
+}
+
+#[test]
 fn verbose_stays_quiet_when_nothing_was_assumed() {
     // -f and -d given: both assumptions are the user's, not ours.
     let o = verbose_bare(&["-v", "-f", "pst", "-t", "nyc", "-d", "2026-01-15"]);
