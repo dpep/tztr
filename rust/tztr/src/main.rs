@@ -10,8 +10,8 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
 use tztr::{
-    has_dateless_timestamp, matches_bytes, resolve_tz, timezone_aliases, today_in_zone,
-    translate_bytes, Format, Match,
+    assumptions, matches_bytes, resolve_tz, timezone_aliases, today_in_zone, translate_bytes,
+    Assumptions, Format, Match,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -279,11 +279,15 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
     if opts.files.is_empty() {
         return Err("-i requires a file argument".to_string());
     }
+    let mut disclosed = Assumptions::default();
     for file in &opts.files {
         let named = |e| file_error(file, e);
         let content = fs::read(file).map_err(named)?;
         let mut translated: Vec<u8> = Vec::with_capacity(content.len());
         for line in content.split_inclusive(|b| *b == b'\n') {
+            // -i rewrites the file on the strength of these assumptions, so it
+            // has more reason to state them, not less.
+            disclose(opts, line, &mut disclosed);
             translated.extend_from_slice(&translate_bytes(
                 line,
                 &opts.to,
@@ -300,12 +304,12 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
 }
 
 /// What the line loop carries between lines: where output goes, the `-j` buffer
-/// (that mode has to see every match before it can print an array), and whether
-/// `-v` has already disclosed its assumptions.
+/// (that mode has to see every match before it can print an array), and which
+/// assumptions `-v` has already disclosed.
 struct Sink<W: Write> {
     out: W,
     collected: Vec<Match>,
-    disclosed: bool,
+    disclosed: Assumptions,
 }
 
 fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
@@ -313,7 +317,7 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
     let mut sink = Sink {
         out: stdout.lock(),
         collected: Vec::new(),
-        disclosed: false,
+        disclosed: Assumptions::default(),
     };
 
     (|| -> Result<(), String> {
@@ -354,11 +358,25 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
 /// a wrong answer from exactly these two silent assumptions and only caught it
 /// because a bare line and an ISO line in the same output disagreed by an hour.
 /// stderr only, so `-j`/`-J` stdout stays clean JSON.
-fn disclose_assumptions(opts: &Options) {
-    if let Some(from) = opts.from.as_deref().filter(|_| opts.from_is_implicit) {
-        eprintln!("tztr: from={from} (implicit, from $TZ) to={}", opts.to);
+/// State whatever `line` assumes that no earlier line already did, so each
+/// assumption is heard once, the first time it is actually made. `disclosed`
+/// accumulates across the run.
+fn disclose(opts: &Options, line: &[u8], disclosed: &mut Assumptions) {
+    if !opts.verbose || opts.detect {
+        return;
     }
-    if opts.date.is_none() {
+    let new = assumptions(line).minus(*disclosed);
+    if !new.any() {
+        return;
+    }
+    *disclosed = disclosed.union(new);
+
+    if new.zone {
+        if let Some(from) = opts.from.as_deref().filter(|_| opts.from_is_implicit) {
+            eprintln!("tztr: from={from} (implicit, from $TZ) to={}", opts.to);
+        }
+    }
+    if new.date && opts.date.is_none() {
         eprintln!(
             "tztr: no -d given, assuming {} for DST resolution",
             today_in_zone(&opts.to)
@@ -376,10 +394,7 @@ fn handle_line<W: Write>(
     line: &[u8],
     sink: &mut Sink<W>,
 ) -> io::Result<()> {
-    if opts.verbose && !opts.detect && !sink.disclosed && has_dateless_timestamp(line) {
-        sink.disclosed = true;
-        disclose_assumptions(opts);
-    }
+    disclose(opts, line, &mut sink.disclosed);
     let out = &mut sink.out;
 
     if json_mode {

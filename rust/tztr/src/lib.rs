@@ -294,22 +294,63 @@ fn convert_match(
     Some(format_time(&zoned, format, m))
 }
 
-/// Whether `line` carries a timestamp with no date. Converting one means
-/// assuming a date, because the *output* zone's DST still has to be decided —
-/// `15:30 UTC` is 11:30 in New York in July and 10:30 in January. A match that
-/// names its own zone is not off the hook: the exposure is on the output side,
-/// and only `-d` answers it.
+/// Which assumptions a line's timestamps force on us, for `-v` to disclose.
 ///
-/// The CLI asks so that `-v` can disclose the assumption instead of answering
-/// silently.
-pub fn has_dateless_timestamp(line: &[u8]) -> bool {
-    patterns()
-        .iter()
-        .find(|p| p.is_match(line))
-        .is_some_and(|p| {
-            p.find_iter(line)
-                .any(|m| detect_format(ascii(m.as_bytes())) == "time")
-        })
+/// The two are separate because they are assumed for separate reasons, and a
+/// diagnostic that claims the wrong one is worse than a missing one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Assumptions {
+    /// A timestamp carries no date, so DST in the *target* zone is resolved
+    /// against today — `15:30 UTC` is 11:30 in New York in July and 10:30 in
+    /// January, so naming its own zone does not get a timestamp off this hook.
+    pub date: bool,
+    /// A timestamp carries no zone either, so its source zone came from `$TZ`.
+    /// Never set without `date`.
+    pub zone: bool,
+}
+
+impl Assumptions {
+    /// Whether anything at all is being assumed.
+    pub fn any(self) -> bool {
+        self.date || self.zone
+    }
+
+    /// The assumptions in `self` that `already` does not cover — what is left
+    /// to say after an earlier line has spoken.
+    #[must_use]
+    pub fn minus(self, already: Self) -> Self {
+        Self {
+            date: self.date && !already.date,
+            zone: self.zone && !already.zone,
+        }
+    }
+
+    /// Everything either one assumes.
+    #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            date: self.date || other.date,
+            zone: self.zone || other.zone,
+        }
+    }
+}
+
+/// What converting `line` would have to assume. See [`Assumptions`].
+pub fn assumptions(line: &[u8]) -> Assumptions {
+    let Some(pattern) = patterns().iter().find(|p| p.is_match(line)) else {
+        return Assumptions::default();
+    };
+
+    let dateless: Vec<&str> = pattern
+        .find_iter(line)
+        .map(|m| ascii(m.as_bytes()))
+        .filter(|s| detect_format(s) == "time")
+        .collect();
+
+    Assumptions {
+        date: !dateless.is_empty(),
+        zone: dateless.iter().any(|s| detect_zone(s).is_none()),
+    }
 }
 
 /// Today's date in `tz` as `YYYY-MM-DD` — the date a date-less timestamp is
