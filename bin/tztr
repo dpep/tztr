@@ -105,6 +105,9 @@ begin
   parser.parse!
 rescue OptionParser::MissingArgument => e
   abort "#{parser.program_name}: missing argument for #{e.args.first}"
+rescue OptionParser::NeedlessArgument => e
+  # args carries the "=value" tail; the user only needs the flag named.
+  abort "#{parser.program_name}: #{e.args.first.split('=').first} takes no argument"
 rescue OptionParser::InvalidOption, OptionParser::AmbiguousOption => e
   # Built from args rather than e.message, which appends a "Did you mean?" line.
   abort "#{parser.program_name}: invalid option: #{e.args.first}"

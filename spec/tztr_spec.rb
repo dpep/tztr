@@ -612,6 +612,12 @@ RSpec.describe Tztr do
       expect(run_fail("--f", "utc", input: "15:30 UTC")).to eq("tztr: invalid option: --f")
     end
 
+    it "rejects an argument on a flag that takes none" do
+      expect(run_fail("--json=foo", input: "15:30 UTC")).to eq("tztr: --json takes no argument")
+      expect(run_fail("--verbose=1", "-t", "utc", input: "15:30 UTC")).to eq("tztr: --verbose takes no argument")
+      expect(run_fail("--list=x", input: "15:30 UTC")).to eq("tztr: --list takes no argument")
+    end
+
     it "reports a missing flag argument" do
       expect(run_fail("-t", input: "15:30 UTC")).to eq("tztr: missing argument for -t")
       expect(run_fail("--to", input: "15:30 UTC")).to eq("tztr: missing argument for --to")
