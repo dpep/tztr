@@ -98,9 +98,13 @@ if options[:help]
   exit
 end
 
-options[:to] = Tztr.resolve_tz(options[:to])
-options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
-options[:local] = options[:to] == Tztr.resolve_tz(local_tz || 'UTC')
+begin
+  options[:to] = Tztr.resolve_tz(options[:to])
+  options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
+  options[:local] = options[:to] == Tztr.resolve_tz(local_tz || 'UTC')
+rescue Tztr::Error => e
+  abort "#{parser.program_name}: #{e.message}"
+end
 ENV['TZ'] = options[:to]
 
 if options[:date]

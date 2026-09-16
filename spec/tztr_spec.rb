@@ -247,6 +247,22 @@ RSpec.describe Tztr do
       expect(Tztr.resolve_tz("America/Chicago")).to eq("America/Chicago")
     end
 
+    it "rejects a name no timezone database knows" do
+      expect { Tztr.resolve_tz("Bogus/Zone") }.to raise_error(Tztr::Error, "unknown timezone: Bogus/Zone")
+      expect { Tztr.resolve_tz("America/New York") }.to raise_error(Tztr::Error)
+      expect { Tztr.resolve_tz("") }.to raise_error(Tztr::Error)
+    end
+
+    it "bounds numeric offsets to the zones that exist" do
+      expect(Tztr.resolve_tz("14")).to eq("Etc/GMT-14")
+      expect { Tztr.resolve_tz("15") }.to raise_error(Tztr::Error, "offset out of range: 15 (expected -12..14)")
+      expect { Tztr.resolve_tz("-13") }.to raise_error(Tztr::Error)
+    end
+
+    it "rejects a sub-hour numeric offset rather than mis-signing it" do
+      expect { Tztr.resolve_tz("+5:30") }.to raise_error(Tztr::Error, "unknown timezone: +5:30")
+    end
+
     it "handles nil" do
       expect(Tztr.resolve_tz(nil)).to be_nil
     end
@@ -290,6 +306,13 @@ RSpec.describe Tztr do
       )
       expect(status).to be_success
       out.chomp
+    end
+
+    def run_fail(*args, input: "")
+      out, err, status = Open3.capture3({ "TZ" => nil }, TZTR, *args, stdin_data: input)
+      expect(status).not_to be_success
+      expect(out).to be_empty
+      err.chomp
     end
 
     it "converts via stdin" do
@@ -449,6 +472,26 @@ RSpec.describe Tztr do
     it "aborts on an unparseable date" do
       out, status = Open3.capture2(TZTR, "-d", "not-a-date", stdin_data: "15:30 PST")
       expect(status).not_to be_success
+    end
+
+    it "aborts on an unresolvable timezone" do
+      expect(run_fail("-t", "Bogus/Zone", input: "2026-04-03T12:00:00Z"))
+        .to eq("tztr: unknown timezone: Bogus/Zone")
+    end
+
+    it "aborts on an out-of-range numeric offset" do
+      expect(run_fail("-t", "15")).to eq("tztr: offset out of range: 15 (expected -12..14)")
+    end
+
+    it "aborts on a sub-hour numeric offset" do
+      expect(run_fail("-t", "+5:30")).to eq("tztr: unknown timezone: +5:30")
+    end
+
+    it "aborts on an unresolvable TZ" do
+      out, err, status = Open3.capture3({ "TZ" => "Bogus/Zone" }, TZTR, stdin_data: "15:30")
+      expect(status).not_to be_success
+      expect(out).to be_empty
+      expect(err.chomp).to eq("tztr: unknown timezone: Bogus/Zone")
     end
 
     it "applies the reference date inside JSON output" do

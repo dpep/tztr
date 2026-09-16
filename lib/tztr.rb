@@ -4,6 +4,12 @@ require 'time'
 require_relative 'tztr/version'
 
 module Tztr
+  Error = Class.new(StandardError)
+
+  # The tzdb Ruby's Time reads through $TZ, and the Rust port reads through
+  # jiff -- the authority on whether a zone name means anything.
+  ZONEINFO_DIRS = [ENV['TZDIR'], '/usr/share/zoneinfo', '/etc/zoneinfo'].compact.freeze
+
   # Abbreviations Ruby's Time.parse resolves on its own.
   NATIVE_ABBREVIATIONS = %w[UT UTC GMT Z EST EDT CST CDT MST MDT PST PDT].freeze
 
@@ -95,17 +101,30 @@ module Tztr
   module_function
 
   def resolve_tz(input)
-    return input if input.nil?
+    return if input.nil?
+
+    input = input.delete_prefix(':') # POSIX spells it TZ=:America/New_York
 
     # Numeric offset: -7 -> Etc/GMT+7 (POSIX sign is inverted)
     if input.match?(/\A[+-]?\d{1,2}\z/)
       n = input.to_i
-      return 'UTC' if n == 0
+      return 'UTC' if n.zero?
+      raise Error, "offset out of range: #{input} (expected -12..14)" unless (-12..14).cover?(n)
 
-      return "Etc/GMT#{n > 0 ? '-' : '+'}#{n.abs}"
+      return "Etc/GMT#{n.positive? ? '-' : '+'}#{n.abs}"
     end
 
-    TIMEZONE_ALIASES[input.downcase.tr(' ', '_')] || input
+    alias_zone = TIMEZONE_ALIASES[input.downcase.tr(' ', '_')]
+    return alias_zone if alias_zone
+    raise Error, "unknown timezone: #{input}" unless known_zone?(input)
+
+    input
+  end
+
+  def known_zone?(name)
+    return false unless name.match?(%r{\A[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*\z})
+
+    ZONEINFO_DIRS.any? { |dir| File.file?(File.join(dir, name)) }
   end
 
   def translate(line, to: 'UTC', from: nil, format: nil, local: false, date: nil)
