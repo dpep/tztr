@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'date'
 require 'time'
 require_relative 'tztr/version'
 
@@ -199,6 +200,10 @@ module Tztr
     # Time-only inputs carry no date, so DST can't be resolved correctly. A
     # reference date supplies the missing context (see README caveat).
     str = "#{date} #{str}" if date && time_only?(str)
+    # Time.parse rolls 2026-02-30 forward to 2026-03-02, moving a logged event
+    # to another day with no signal. Leave impossible dates untranslated.
+    raise ArgumentError, "impossible date: #{str}" unless real_date?(str)
+
     # Time.parse reads the "p" of "3:45 p.m." as the military zone P (-03:00).
     str = str.sub(/([AaPp])\.([Mm])\.?/, '\1\2')
 
@@ -237,6 +242,11 @@ module Tztr
   def earliest_occurrence(time)
     earlier = time - 3600
     earlier.strftime('%F %T') == time.strftime('%F %T') ? earlier : time
+  end
+
+  def real_date?(str)
+    m = str.match(/\A(\d{4})-(\d{2})-(\d{2})/)
+    m.nil? || Date.valid_date?(m[1].to_i, m[2].to_i, m[3].to_i)
   end
 
   def time_only?(str)

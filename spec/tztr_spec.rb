@@ -152,6 +152,19 @@ RSpec.describe Tztr do
     end
   end
 
+  describe "out-of-range fields" do
+    it "normalizes a time that overflows into the next day" do
+      expect(Tztr.translate("24:00 UTC", to: "UTC")).to eq("00:00 UTC")
+      expect(Tztr.translate("23:59:60 UTC", to: "UTC")).to eq("00:00:00 UTC")
+    end
+
+    it "leaves an impossible calendar date alone" do
+      expect(Tztr.translate("2026-02-30T12:00:00Z", to: "UTC")).to eq("2026-02-30T12:00:00Z")
+      expect(Tztr.translate("2026-02-29T12:00:00Z", to: "UTC")).to eq("2026-02-29T12:00:00Z")
+      expect(Tztr.translate("2026-13-03T12:00:00Z", to: "UTC")).to eq("2026-13-03T12:00:00Z")
+    end
+  end
+
   describe ".matches" do
     it "returns structured info per match" do
       expect(Tztr.matches("2026-04-03T12:00:00Z", to: "America/Los_Angeles"))
