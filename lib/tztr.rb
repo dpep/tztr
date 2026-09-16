@@ -132,7 +132,7 @@ module Tztr
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
-    result = line.dup
+    result = scannable(line)
 
     PATTERNS.each do |pattern|
       next unless result.match?(pattern)
@@ -155,6 +155,7 @@ module Tztr
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
+    line = scannable(line)
     results = []
 
     PATTERNS.each do |pattern|
@@ -162,7 +163,8 @@ module Tztr
 
       line.scan(pattern) do |match|
         info = {
-          original: match,
+          # Patterns only ever match ASCII, whatever the rest of the line is.
+          original: match.force_encoding(Encoding::UTF_8),
           detected_format: detect_format(match),
           detected_tz: detect_zone(match),
         }
@@ -242,6 +244,13 @@ module Tztr
   def earliest_occurrence(time)
     earlier = time - 3600
     earlier.strftime('%F %T') == time.strftime('%F %T') ? earlier : time
+  end
+
+  # A working copy safe to scan and rewrite. Every pattern is ASCII, so a line
+  # carrying stray bytes is matched as bytes and the rest comes through
+  # untouched -- rather than killing the run on an encoding error.
+  def scannable(line)
+    line.valid_encoding? ? line.dup : line.b
   end
 
   def real_date?(str)

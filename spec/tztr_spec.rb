@@ -504,6 +504,14 @@ RSpec.describe Tztr do
       expect(status).not_to be_success
     end
 
+    it "preserves bytes that are not valid UTF-8" do
+      input = "2026-04-03T12:00:00Z \xff\xfe junk\n2026-04-03T13:00:00Z ok\n".b
+      out, _, status = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "pst", stdin_data: input)
+      expect(status).to be_success
+      expect(out.b)
+        .to eq("2026-04-03T05:00:00-07:00 \xff\xfe junk\n2026-04-03T06:00:00-07:00 ok\n".b)
+    end
+
     it "aborts on an unresolvable timezone" do
       expect(run_fail("-t", "Bogus/Zone", input: "2026-04-03T12:00:00Z"))
         .to eq("tztr: unknown timezone: Bogus/Zone")
