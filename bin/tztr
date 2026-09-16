@@ -53,6 +53,18 @@ options = {
   format: nil
 }
 
+FORMATS = %w[iso short time].freeze
+
+# Validated as the flag is parsed, not afterwards, so `-h -F bogus` still
+# fails -- the order the Rust port parses in.
+parse_format = lambda do |value|
+  unless FORMATS.include?(value)
+    abort "tztr: invalid format: #{value} (expected #{FORMATS.join(', ')})"
+  end
+
+  value.to_sym
+end
+
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: tztr [options] [file]"
   opts.separator ""
@@ -63,7 +75,7 @@ parser = OptionParser.new do |opts|
   opts.on("-t", "--to TZ", "Output timezone (default: $TZ, else UTC)") { |v| options[:to] = v }
   opts.on("-l", "--list", "List timezone aliases") { Tztr::TIMEZONE_ALIASES.sort.each { |k, v| puts "%-12s %s" % [k, v] }; exit }
   opts.on("-i", "--in-place", "Edit file in place") { options[:inplace] = true }
-  opts.on("-F", "--format FMT", %i[iso short time], "Output format: iso, short, time (default: preserve input)") { |v| options[:format] = v }
+  opts.on("-F", "--format FMT", "Output format: iso, short, time (default: preserve input)") { |v| options[:format] = parse_format.call(v) }
   opts.on("-d", "--date DATE", "Reference date for time-only inputs (resolves DST)") { |v| options[:date] = v }
   opts.on("-j", "--json", "Emit a JSON array of matches") { options[:json] = true }
   opts.on("-J", "--ndjson", "Emit newline-delimited JSON (one object per match)") { options[:ndjson] = true }
@@ -87,7 +99,15 @@ parser = OptionParser.new do |opts|
   opts.separator "  echo '15:30' | tztr -f pacific -t utc -d 2026-01-15"
 end
 begin
+  # No prefix abbreviation: --jso must not quietly mean --json, because the
+  # Rust binary most users install rejects it.
+  parser.require_exact = true
   parser.parse!
+rescue OptionParser::MissingArgument => e
+  abort "#{parser.program_name}: missing argument for #{e.args.first}"
+rescue OptionParser::InvalidOption, OptionParser::AmbiguousOption => e
+  # Built from args rather than e.message, which appends a "Did you mean?" line.
+  abort "#{parser.program_name}: invalid option: #{e.args.first}"
 rescue OptionParser::ParseError => e
   abort "#{parser.program_name}: #{e.message}"
 end
