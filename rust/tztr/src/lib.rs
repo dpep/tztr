@@ -32,27 +32,71 @@ pub struct Match {
     pub translated: Option<String>,
 }
 
+/// Timezone abbreviations `tztr` recognizes inside text.
+///
+/// The union of the abbreviations Ruby's `Time.parse` resolves natively
+/// (`UT UTC GMT` plus E/C/M/P × ST/DT) and the abbreviation-shaped keys of
+/// [`timezone_aliases`]. Deliberately an allowlist: the `[A-Z]{2,4}` wildcard
+/// this replaces ate log levels (`INFO`, `WARN`, `ERROR`) and meridiems (`PM`)
+/// straight out of the line.
+///
+/// City nicknames (`sf`, `nyc`, …) are *not* here — they are `-t`/`-f` values,
+/// not things to look for inside text.
+pub const ZONE_ABBREVIATIONS: &[&str] = &[
+    "AEDT", "AEST", "AKDT", "AKST", "BST", "CDT", "CEST", "CET", "CST", "CT", "EDT", "EST", "ET",
+    "GMT", "HKT", "HST", "IST", "JST", "KST", "MDT", "MST", "MT", "NZDT", "NZST", "PDT", "PST",
+    "PT", "UT", "UTC", "Z",
+];
+
+/// [`ZONE_ABBREVIATIONS`] as a regex alternation, longest token first — the
+/// regex crate's alternation is leftmost-*first*, so `UT` ahead of `UTC` would
+/// clip the trailing `C` off and orphan it in the output.
+fn zone_alternation() -> &'static str {
+    static ALT: OnceLock<String> = OnceLock::new();
+    ALT.get_or_init(|| {
+        let mut tokens = ZONE_ABBREVIATIONS.to_vec();
+        tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
+        tokens.join("|")
+    })
+}
+
+/// The zone an abbreviation names, for the ones that are not a fixed offset
+/// Ruby's `Time.parse` already knows (`CET`, `JST`, `AEST`, …).
+fn abbrev_zone(token: &str) -> Option<TimeZone> {
+    let key = token.to_lowercase();
+    let name = timezone_aliases()
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| *v)?;
+    TimeZone::get(name).ok()
+}
+
 /// Timestamp patterns, ordered and first-match-wins per line (see CLAUDE.md).
 /// More specific patterns (with timezone) come before less specific ones.
 fn patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS
         .get_or_init(|| {
+            let zone = zone_alternation();
+            // A trailing zone token: an allowlisted abbreviation or +HHMM.
+            let tz = format!("(?:{zone}|[+-]\\d{{4}})");
+            // Seconds and fractional seconds, both optional.
+            let secs = r"(?::\d{2}(?:\.\d+)?)?";
             [
                 // ISO 8601 with Z or offset
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})",
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})".to_string(),
                 // ISO 8601 without timezone
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?",
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
                 // Date space time with tz
-                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})",
+                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)? ?{tz}\b"),
                 // Date space time
-                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?",
+                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
                 // Time with tz
-                r"\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})\b",
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs} ?{tz}\b"),
                 // Time with offset
-                r"\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2}:?\d{2}\b",
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs}[+-]\d{{2}}:?\d{{2}}\b"),
                 // Bare time
-                r"\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b",
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs}\b"),
             ]
             .iter()
             .map(|p| Regex::new(p).expect("valid pattern"))
@@ -196,7 +240,10 @@ fn date_space_re() -> &'static Regex {
 
 fn detect_zone_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\s?(Z|[+-]\d{2}:?\d{2}|UTC|GMT|[A-Z]{2,4})$").unwrap())
+    RE.get_or_init(|| {
+        let zone = zone_alternation();
+        Regex::new(&format!(r"\s?({zone}|[+-]\d{{2}}:?\d{{2}})$")).unwrap()
+    })
 }
 
 // --- timestamp parsing -----------------------------------------------------
@@ -204,9 +251,10 @@ fn detect_zone_re() -> &'static Regex {
 fn components_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"^(?:(\d{4})-(\d{2})-(\d{2})[T ])?(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?\s?(Z|[+-]\d{2}:?\d{2}|[+-]\d{4}|[A-Za-z]{2,4})?$",
-        )
+        let zone = zone_alternation();
+        Regex::new(&format!(
+            r"^(?:(\d{{4}})-(\d{{2}})-(\d{{2}})[T ])?(\d{{1,2}}):(\d{{2}})(?::(\d{{2}})(?:\.(\d+))?)?\s?({zone}|[+-]\d{{2}}:?\d{{2}}|[+-]\d{{4}})?$",
+        ))
         .unwrap()
     })
 }
@@ -245,31 +293,21 @@ fn parse(
     let nanos = caps.get(7).map_or(0, |m| frac_to_nanos(m.as_str()));
     let zone_token = caps.get(8).map(|m| m.as_str()).unwrap_or("");
 
-    let recognized = zone_offset_seconds(zone_token);
-    let has_token = !zone_token.is_empty();
-
-    // Determine how to anchor the wall-clock time, and which zone supplies
-    // "today" for date-less inputs.
-    enum Mode<'a> {
-        Fixed(i32),
-        InZone(&'a TimeZone),
-    }
-    // For date-less inputs, the missing date is "today" as seen in the zone the
-    // timestamp is expressed in (mirrors Ruby's Time.parse) — i.e. the embedded
-    // zone when present, else the source/output zone. NOT the output zone when
-    // an embedded zone is given, which would be off by a day near a boundary.
-    let (mode, today_tz): (Mode, TimeZone) = if has_token {
-        match recognized {
-            Some(off) => (
-                Mode::Fixed(off),
-                TimeZone::fixed(Offset::from_seconds(off).ok()?),
-            ),
-            None => (Mode::InZone(to_tz), to_tz.clone()), // unknown abbrev -> ignored
+    // The zone the wall-clock time is anchored in — and, for date-less inputs,
+    // the zone whose "today" fills the missing date (mirrors Ruby's
+    // Time.parse). NOT the output zone when a zone is embedded, which would
+    // land a day off near a midnight boundary.
+    let anchor: TimeZone = if !zone_token.is_empty() {
+        match zone_offset_seconds(zone_token) {
+            // UTC/GMT/UT, E/C/M/P × ST/DT and numeric offsets are fixed offsets.
+            Some(off) => TimeZone::fixed(Offset::from_seconds(off).ok()?),
+            // CET, JST, AEST, … carry real DST rules; resolve them as zones.
+            None => abbrev_zone(zone_token)?,
         }
     } else if let Some(f) = from_tz {
-        (Mode::InZone(f), f.clone())
+        f.clone()
     } else {
-        (Mode::InZone(to_tz), to_tz.clone())
+        to_tz.clone()
     };
 
     let (year, month, day) = match (caps.get(1), caps.get(2), caps.get(3)) {
@@ -278,18 +316,11 @@ fn parse(
             mo.as_str().parse().ok()?,
             d.as_str().parse().ok()?,
         ),
-        _ => today_in(&today_tz),
+        _ => today_in(&anchor),
     };
 
     let civil = DateTime::new(year, month, day, hour, minute, second, nanos).ok()?;
-
-    let instant = match mode {
-        Mode::Fixed(off) => {
-            let tz = TimeZone::fixed(Offset::from_seconds(off).ok()?);
-            civil.to_zoned(tz).ok()?
-        }
-        Mode::InZone(tz) => civil.to_zoned(tz.clone()).ok()?,
-    };
+    let instant = civil.to_zoned(anchor).ok()?;
 
     Some(instant.with_time_zone(to_tz.clone()))
 }
@@ -664,6 +695,67 @@ mod tests {
             ),
             "22:30 UTC"
         );
+    }
+
+    // --- B1: zone detection is an allowlist, not [A-Z]{2,4} ----------------
+
+    fn tr_on(line: &str, to: &str, date: &str) -> String {
+        translate(line, to, None, None, false, Some(date))
+    }
+
+    #[test]
+    fn natively_known_abbreviations_keep_their_fixed_offset() {
+        assert_eq!(tr_on("15:30 PST", "UTC", "2026-04-03"), "23:30 UTC");
+        assert_eq!(tr_on("15:30 EST", "UTC", "2026-04-03"), "20:30 UTC");
+    }
+
+    #[test]
+    fn alias_only_abbreviations_resolve_through_the_alias_table() {
+        // Previously matched by [A-Z]{2,4}, then silently ignored by the
+        // parser — a Tokyo time was treated as local and came out 9h wrong.
+        assert_eq!(tr_on("15:30 JST", "UTC", "2026-04-03"), "06:30 UTC");
+        assert_eq!(tr_on("15:30 CET", "UTC", "2026-01-15"), "14:30 UTC");
+        assert_eq!(tr_on("15:30 CET", "UTC", "2026-07-15"), "13:30 UTC");
+        assert_eq!(tr_on("15:30 AEST", "UTC", "2026-06-15"), "05:30 UTC");
+    }
+
+    #[test]
+    fn log_levels_are_not_timezones() {
+        assert_eq!(
+            tr_on("15:30 INFO server started", "UTC", "2026-04-03"),
+            "15:30 UTC INFO server started"
+        );
+        assert_eq!(
+            tr_on("15:30 WARN disk low", "UTC", "2026-04-03"),
+            "15:30 UTC WARN disk low"
+        );
+        assert_eq!(
+            tr("2026-04-03 12:00:00 ERROR db failed", "UTC"),
+            "2026-04-03 12:00:00 UTC ERROR db failed"
+        );
+    }
+
+    #[test]
+    fn zone_abbreviations_are_the_documented_union() {
+        assert_eq!(ZONE_ABBREVIATIONS.len(), 30);
+        for a in ZONE_ABBREVIATIONS {
+            assert!(
+                zone_offset_seconds(a).is_some() || abbrev_zone(a).is_some(),
+                "{a} is detected but resolves to nothing"
+            );
+        }
+        for junk in ["INFO", "WARN", "ERROR", "PM", "AM", "TODO"] {
+            assert!(!ZONE_ABBREVIATIONS.contains(&junk), "{junk} is not a zone");
+        }
+    }
+
+    #[test]
+    fn detected_zone_is_the_one_that_converted() {
+        let m = matches("15:30 JST", "UTC", None, None, false, false, None);
+        assert_eq!(m[0].detected_tz.as_deref(), Some("JST"));
+        let m = matches("15:30 INFO", "UTC", None, None, false, false, None);
+        assert_eq!(m[0].original, "15:30");
+        assert_eq!(m[0].detected_tz, None);
     }
 
     #[test]
