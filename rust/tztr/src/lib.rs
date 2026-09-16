@@ -89,26 +89,28 @@ fn patterns() -> &'static [BytesRegex] {
         .get_or_init(|| {
             let zone = zone_alternation();
             // A trailing zone token: an allowlisted abbreviation or +HHMM.
-            let tz = format!("(?:{zone}|[+-]\\d{{4}})");
+            let tz = format!(r"(?:(?:{zone})\b|[+-]\d{{4}}\b)");
             // Seconds and fractional seconds, both optional.
             let secs = r"(?::\d{2}(?:\.\d+)?)?";
             // A meridiem, optionally followed by a zone ("3:45 PM PST").
-            let mer = format!(r" ?[AaPp]\.?[Mm]\.?(?: ?{tz})?");
+            let mer = format!(r" ?[AaPp]\.?[Mm]\.?\b(?: ?{tz})?");
             [
                 // ISO 8601 with Z or offset
                 r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})".to_string(),
                 // ISO 8601 without timezone
                 r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
-                // Date space 12-hour time
-                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)?{mer}\b"),
+                // Date space 12-hour time — above the with-tz pattern, and the
+                // date must be part of the match or the time resolves its DST
+                // against today instead of the date beside it.
+                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{1,2}}:\d{{2}}{secs}{mer}"),
                 // Date space time with tz
-                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)? ?{tz}\b"),
+                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)? ?{tz}"),
                 // Date space time
                 r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
                 // 12-hour time
-                format!(r"\b\d{{1,2}}:\d{{2}}{secs}{mer}\b"),
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs}{mer}"),
                 // Time with tz
-                format!(r"\b\d{{1,2}}:\d{{2}}{secs} ?{tz}\b"),
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs} ?{tz}"),
                 // Time with offset
                 format!(r"\b\d{{1,2}}:\d{{2}}{secs}[+-]\d{{2}}:?\d{{2}}\b"),
                 // Bare time
@@ -241,13 +243,26 @@ pub fn matches(
     detect: bool,
     date: Option<&str>,
 ) -> Vec<Match> {
+    matches_bytes(line.as_bytes(), to, from, format, detect, date)
+}
+
+/// [`matches`] for input that may not be valid UTF-8. Every match is ASCII, so
+/// the `Match` fields are text either way.
+pub fn matches_bytes(
+    line: &[u8],
+    to: &str,
+    from: Option<&str>,
+    format: Option<Format>,
+    detect: bool,
+    date: Option<&str>,
+) -> Vec<Match> {
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
     let mut results = Vec::new();
 
     for pattern in patterns() {
-        if pattern.is_match(line.as_bytes()) {
-            for m in pattern.find_iter(line.as_bytes()) {
+        if pattern.is_match(line) {
+            for m in pattern.find_iter(line) {
                 let original = ascii(m.as_bytes());
                 let translated = if detect {
                     None
@@ -282,12 +297,12 @@ fn convert_match(
 /// Whether `line` carries a timestamp with neither a zone nor a date — the
 /// case where converting it means assuming both. The CLI asks so that `-v` can
 /// disclose those assumptions instead of answering silently.
-pub fn has_bare_timestamp(line: &str) -> bool {
+pub fn has_bare_timestamp(line: &[u8]) -> bool {
     patterns()
         .iter()
-        .find(|p| p.is_match(line.as_bytes()))
+        .find(|p| p.is_match(line))
         .is_some_and(|p| {
-            p.find_iter(line.as_bytes()).any(|m| {
+            p.find_iter(line).any(|m| {
                 let s = ascii(m.as_bytes());
                 detect_format(s) == "time" && detect_zone(s).is_none()
             })
@@ -1003,6 +1018,24 @@ mod tests {
             tr("2026-04-03 03:45:00 PM PST", "UTC"),
             "2026-04-03 23:45:00 UTC"
         );
+    }
+
+    #[test]
+    fn a_dated_12_hour_time_may_drop_its_seconds() {
+        // The date has to be part of the match: matching only `3:45 PM` leaves
+        // the timestamp resolving its DST against *today* instead of the date
+        // sitting right next to it.
+        assert_eq!(tr("2026-04-03 3:45 PM", "UTC"), "2026-04-03 15:45:00 UTC");
+        assert_eq!(tr("2026-04-03 03:45 PM", "UTC"), "2026-04-03 15:45:00 UTC");
+    }
+
+    #[test]
+    fn meridiem_dots_are_stripped_not_parsed() {
+        // Ruby's Time.parse reads a bare `P` as military zone P (-03:00), so
+        // the dots have to come off before the hour is folded.
+        assert_eq!(tr("11:30 p.m.", "UTC"), "23:30 UTC.");
+        assert_eq!(tr("11:30 P.M", "UTC"), "23:30 UTC");
+        assert_eq!(tr("11:30 A.M.", "UTC"), "11:30 UTC.");
     }
 
     #[test]

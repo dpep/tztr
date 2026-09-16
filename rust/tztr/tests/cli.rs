@@ -258,6 +258,37 @@ fn verbose_discloses_the_assumptions_a_bare_timestamp_forces() {
 }
 
 #[test]
+fn verbose_suppresses_the_startup_line_when_the_source_zone_is_implicit() {
+    // Otherwise it and the disclosure line say the same thing twice.
+    let o = verbose_bare(&["-v", "-t", "nyc"]);
+    assert!(
+        !o.stderr.contains("tztr: from=America/Los_Angeles to="),
+        "{}",
+        o.stderr
+    );
+    // An explicit -f keeps the plain startup line.
+    let o = verbose_bare(&["-v", "-f", "utc", "-t", "nyc"]);
+    assert!(
+        o.stderr.contains("tztr: from=UTC to=America/New_York"),
+        "{}",
+        o.stderr
+    );
+    // No -f and no $TZ keeps it too.
+    let o = run_tz(b"15:30\n", &["-v"], None);
+    assert!(o.stderr.contains("tztr: from=auto to=UTC"), "{}", o.stderr);
+}
+
+#[test]
+fn verbose_dates_the_dst_assumption_in_the_target_zone() {
+    let o = verbose_bare(&["-v", "-t", "Pacific/Auckland"]);
+    let expected = format!(
+        "tztr: no -d given, assuming {} for DST resolution",
+        tztr::today_in_zone("Pacific/Auckland")
+    );
+    assert!(o.stderr.contains(&expected), "{}", o.stderr);
+}
+
+#[test]
 fn verbose_stays_quiet_when_nothing_was_assumed() {
     // -f and -d given: both assumptions are the user's, not ours.
     let o = verbose_bare(&["-v", "-f", "pst", "-t", "nyc", "-d", "2026-01-15"]);
@@ -337,6 +368,8 @@ fn accepts_the_documented_date_forms() {
         "20260115",
         "January 15, 2026",
         "Jan 15 2026",
+        "Jan. 15, 2026",
+        "Sep 15 2026", // three letters exactly; `Sept` is not a form we take
         "15 January 2026",
     ] {
         assert_eq!(
@@ -357,6 +390,10 @@ fn rejects_dates_outside_that_set_and_dates_that_do_not_exist() {
         "01/15/2026", // ambiguous day-first/month-first
         "15-01-2026",
         "2026-01-15T00:00:00Z",
+        "Sept 15, 2026", // full name or exactly three letters, nothing between
+        "Janu 15 2026",
+        "2026-1-5", // numeric forms want two digits
+        "2026/1/5",
     ] {
         assert_eq!(
             fails("15:30 PST\n", &["-t", "utc", "-d", date]),
@@ -364,6 +401,47 @@ fn rejects_dates_outside_that_set_and_dates_that_do_not_exist() {
             "{date}"
         );
     }
+}
+
+// --- B9: one clean error line, whichever path hit it ------------------------
+
+#[test]
+fn an_error_about_a_file_names_the_file() {
+    // With several file arguments the bare message says nothing about which
+    // one failed, so both code paths name it.
+    let missing = "/nonexistent/tztr-does-not-exist.log";
+    assert_eq!(
+        fails("", &["-t", "utc", missing]),
+        format!("tztr: {missing}: No such file or directory (os error 2)")
+    );
+    assert_eq!(
+        fails("", &["-i", "-t", "utc", missing]),
+        format!("tztr: {missing}: No such file or directory (os error 2)")
+    );
+    assert_eq!(
+        fails("", &["-t", "utc", "/tmp"]),
+        "tztr: /tmp: Is a directory (os error 21)"
+    );
+    assert_eq!(
+        fails("", &["-i", "-t", "utc", "/tmp"]),
+        "tztr: /tmp: Is a directory (os error 21)"
+    );
+}
+
+#[test]
+fn errors_not_about_a_file_stay_bare() {
+    assert_eq!(
+        fails("2026-04-03T12:00:00Z\n", &["--bogus"]),
+        "tztr: invalid option: --bogus"
+    );
+    assert_eq!(
+        fails("2026-04-03T12:00:00Z\n", &["-t", "Bogus/Zone"]),
+        "tztr: unknown timezone: Bogus/Zone"
+    );
+    assert_eq!(
+        fails("15:30\n", &["-d", "not-a-date"]),
+        "tztr: invalid date: not-a-date"
+    );
 }
 
 // --- B8: non-UTF-8 input keeps its bytes ------------------------------------
@@ -412,15 +490,19 @@ fn in_place_edit_keeps_bytes_it_cannot_decode() {
 }
 
 #[test]
-fn structured_output_skips_invalid_lines_and_stays_parseable() {
-    // Raw bytes cannot go into a JSON stream; the line is dropped from the
-    // structured view rather than corrupting stdout for the reader.
-    let input: &[u8] = b"\xff\xfe\n2026-04-03T12:00:00Z\n";
+fn structured_output_still_sees_timestamps_on_an_invalid_line() {
+    // One stray byte must not cost the line its timestamp here either. The
+    // match itself is ASCII, so the JSON stays well-formed.
+    let input: &[u8] = b"2026-04-03T12:00:00Z \xff\xfe junk\n";
     let o = run_tz(input, &["-t", "pst", "-j"], Some("UTC"));
     assert!(o.ok, "{}", o.stderr);
     let v: serde_json::Value = serde_json::from_str(o.out()).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["original"], "2026-04-03T12:00:00Z");
     assert_eq!(v[0]["translated"], "2026-04-03T05:00:00-07:00");
+
+    let o = run_tz(input, &["-t", "pst", "--detect"], Some("UTC"));
+    assert_eq!(o.out().trim_end(), "2026-04-03T12:00:00Z\tiso\tZ");
 }
 
 // --- B14: `-F short` always says which zone ---------------------------------

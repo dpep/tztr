@@ -10,7 +10,7 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
 use tztr::{
-    has_bare_timestamp, matches, resolve_tz, timezone_aliases, today_in_zone, translate,
+    has_bare_timestamp, matches_bytes, resolve_tz, timezone_aliases, today_in_zone,
     translate_bytes, Format, Match,
 };
 
@@ -211,7 +211,9 @@ fn run() -> Result<ExitCode, String> {
         return Err("-i cannot be combined with --json/--ndjson/--detect".to_string());
     }
 
-    if opts.verbose {
+    // An implicit source zone gets the fuller disclosure below instead, once we
+    // know a bare timestamp actually made us lean on it.
+    if opts.verbose && !opts.from_is_implicit {
         eprintln!(
             "tztr: from={} to={}",
             opts.from.as_deref().unwrap_or("auto"),
@@ -236,7 +238,8 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
         return Err("-i requires a file argument".to_string());
     }
     for file in &opts.files {
-        let content = fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+        let named = |e: io::Error| format!("{file}: {e}");
+        let content = fs::read(file).map_err(named)?;
         let mut translated: Vec<u8> = Vec::with_capacity(content.len());
         for line in content.split_inclusive(|b| *b == b'\n') {
             translated.extend_from_slice(&translate_bytes(
@@ -248,7 +251,7 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
             ));
         }
         if translated != content {
-            fs::write(file, translated).map_err(|e| format!("{file}: {e}"))?;
+            fs::write(file, translated).map_err(named)?;
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -271,18 +274,23 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
         disclosed: false,
     };
 
-    let result = (|| -> io::Result<()> {
+    (|| -> Result<(), String> {
         if opts.files.is_empty() {
             let stdin = io::stdin();
             for_each_line(stdin.lock(), |line| {
                 handle_line(opts, json_mode, line, &mut sink)
-            })?;
+            })
+            .map_err(|e| e.to_string())?;
         } else {
             for file in &opts.files {
-                let f = fs::File::open(file)?;
+                // An error about a file names it — with several arguments the
+                // bare message does not say which one failed.
+                let named = |e: io::Error| format!("{file}: {e}");
+                let f = fs::File::open(file).map_err(named)?;
                 for_each_line(BufReader::new(f), |line| {
                     handle_line(opts, json_mode, line, &mut sink)
-                })?;
+                })
+                .map_err(named)?;
             }
         }
         if opts.json {
@@ -292,12 +300,12 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
                     .map(|m| json_value(m, opts.detect))
                     .collect(),
             );
-            writeln!(sink.out, "{}", serde_json::to_string_pretty(&arr).unwrap())?;
+            writeln!(sink.out, "{}", serde_json::to_string_pretty(&arr).unwrap())
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
-    })();
+    })()?;
 
-    result.map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -311,40 +319,23 @@ fn disclose_assumptions(opts: &Options) {
         eprintln!("tztr: from={from} (implicit, from $TZ) to={}", opts.to);
     }
     if opts.date.is_none() {
-        let zone = opts.from.as_deref().unwrap_or(&opts.to);
         eprintln!(
             "tztr: no -d given, assuming {} for DST resolution",
-            today_in_zone(zone)
+            today_in_zone(&opts.to)
         );
     }
 }
 
-/// Handle one raw input line. A line that is not valid UTF-8 still has its
-/// timestamps converted, but every byte around them survives untouched — these
-/// are people's logs, and lossy decoding rewrote them. Structured modes drop
-/// such a line instead: raw bytes in a JSON stream corrupt it for the reader.
+/// Handle one raw input line. Everything here works in bytes: the patterns are
+/// ASCII, so a line carrying an undecodable byte still has its timestamps found
+/// and converted, and every other byte comes out exactly as it went in. These
+/// are people's logs — lossy decoding used to rewrite them.
 fn handle_line<W: Write>(
     opts: &Options,
     json_mode: bool,
-    raw: &[u8],
+    line: &[u8],
     sink: &mut Sink<W>,
 ) -> io::Result<()> {
-    let line = match std::str::from_utf8(raw) {
-        Ok(line) => line,
-        Err(_) => {
-            if !json_mode && !opts.detect {
-                sink.out.write_all(&translate_bytes(
-                    raw,
-                    &opts.to,
-                    opts.from.as_deref(),
-                    opts.format,
-                    opts.date.as_deref(),
-                ))?;
-            }
-            return Ok(());
-        }
-    };
-
     if opts.verbose && !opts.detect && !sink.disclosed && has_bare_timestamp(line) {
         sink.disclosed = true;
         disclose_assumptions(opts);
@@ -352,7 +343,7 @@ fn handle_line<W: Write>(
     let out = &mut sink.out;
 
     if json_mode {
-        let ms = matches(
+        let ms = matches_bytes(
             line,
             &opts.to,
             opts.from.as_deref(),
@@ -368,7 +359,7 @@ fn handle_line<W: Write>(
             sink.collected.extend(ms);
         }
     } else if opts.detect {
-        for m in matches(line, &opts.to, opts.from.as_deref(), None, true, None) {
+        for m in matches_bytes(line, &opts.to, opts.from.as_deref(), None, true, None) {
             writeln!(
                 out,
                 "{}\t{}\t{}",
@@ -378,17 +369,13 @@ fn handle_line<W: Write>(
             )?;
         }
     } else {
-        write!(
-            out,
-            "{}",
-            translate(
-                line,
-                &opts.to,
-                opts.from.as_deref(),
-                opts.format,
-                opts.date.as_deref(),
-            )
-        )?;
+        out.write_all(&translate_bytes(
+            line,
+            &opts.to,
+            opts.from.as_deref(),
+            opts.format,
+            opts.date.as_deref(),
+        ))?;
     }
     Ok(())
 }
@@ -498,8 +485,8 @@ fn normalize_date(input: &str) -> Option<String> {
     use regex::Regex;
     let input = input.trim();
 
-    // YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD
-    let ymd = Regex::new(r"^(\d{4})(?:[-/](\d{1,2})[-/](\d{1,2})|(\d{2})(\d{2}))$").unwrap();
+    // YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD — two digits, no `2026-1-5`
+    let ymd = Regex::new(r"^(\d{4})(?:[-/](\d{2})[-/](\d{2})|(\d{2})(\d{2}))$").unwrap();
     if let Some(c) = ymd.captures(input) {
         let group = |a: usize, b: usize| c.get(a).or_else(|| c.get(b));
         return build_date(&c[1], group(2, 4)?.as_str(), group(3, 5)?.as_str());
@@ -527,6 +514,8 @@ fn build_date(year: &str, month: &str, day: &str) -> Option<String> {
     Some(date.strftime("%Y-%m-%d").to_string())
 }
 
+/// The full month name, or exactly its first three letters. Nothing between:
+/// `Sep` and `September` are forms, `Sept` is not.
 fn month_number(name: &str) -> Option<u32> {
     let n = name.to_lowercase();
     let months = [
@@ -545,6 +534,6 @@ fn month_number(name: &str) -> Option<u32> {
     ];
     months
         .iter()
-        .position(|m| *m == n || m.starts_with(&n) && n.len() >= 3)
+        .position(|m| *m == n || (n.len() == 3 && m.starts_with(&n)))
         .map(|i| i as u32 + 1)
 }
