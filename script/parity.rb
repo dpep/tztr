@@ -403,11 +403,34 @@ end
   ["-F", "t", "-t", "utc"],
   ["-F", "is", "-t", "utc"],
   ["--format=sh", "--to=utc"],
+  # An inline value on a flag that takes none. Splitting --name=value and
+  # keeping only the name discards the value in silence, the same class of bug
+  # as reading a log level as a zone -- so every no-argument flag is swept.
+  ["--json=foo"],
+  ["--ndjson=x"],
+  ["--detect=x"],
+  ["--verbose=1"],
+  ["--list=x"],
+  ["--in-place=x"],
+  ["--version=x"],
+  ["--help=x"],
+  # ...and the value-taking flags alongside them, so the sweep above cannot
+  # pass by rejecting every --name=value form.
+  ["--format=iso", "--to=utc"],
+  ["--to=utc"],
+  ["--from=utc", "--to=pst"],
+  ["--date=2026-01-15", "--to=utc"],
+  # the short-flag neighbour: a tail after a flag that takes no argument
+  ["-jfoo"],
+  ["-vtsf"],
   # terminators and dash-shaped operands
   ["--", "-t"],            # a file literally named "-t"
   ["-t", "utc", "--", "--detect"],
   ["-"],                   # a file literally named "-"
 ].each { |args| add(group: "argv", args: args, stdin: "15:30 UTC\n") }
+
+# --in-place=x against a real file: rejecting it must also leave the file alone.
+add(group: "argv", args: ["--in-place=x", "-t", "sf", "a.log"], files: { "a.log" => LOG_A })
 
 # Options after a file operand: OptionParser permutes argv by default.
 [
@@ -469,6 +492,19 @@ add(group: "golden", args: ["-t", "pst", "-j"], stdin: "15:30 UTC \xFF\xFE tail\
 
       "expected exit 0 and 1 JSON match, got exit #{code} / #{out.inspect}"
     })
+
+# -l and -V act inside the option block itself. Validation has to come first,
+# or the list/version is already on stdout by the time the argument is refused
+# -- and both binaries doing that would still look like parity.
+[["--list=x", "--list"], ["--version=x", "--version"]].each do |args, flag|
+  add(group: "golden", args: [args], stdin: "15:30 UTC\n",
+      expect: lambda { |out, err, code|
+        next if code == 1 && out.empty? && err == "tztr: #{flag} takes no argument\n"
+
+        "expected exit 1, empty stdout and 'tztr: #{flag} takes no argument', " \
+          "got exit #{code} / out #{out.inspect} / err #{err.inspect}"
+      })
+end
 
 add(group: "golden", args: ["-t", "sf", "missing.log"], files: {},
     expect: lambda { |_out, err, code|
