@@ -642,6 +642,29 @@ mod tests {
     }
 
     #[test]
+    fn alias_table_is_sorted_and_unique() {
+        // `-l` prints this table in order and must match Ruby's live sort;
+        // the table is hand-written, so the invariant needs a guard.
+        let keys: Vec<&str> = timezone_aliases().iter().map(|(k, _)| *k).collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn gmt_is_utc_not_london() {
+        // Europe/London follows British Summer Time; GMT does not.
+        assert_eq!(resolve_tz("gmt"), "UTC");
+        assert_eq!(resolve_tz("bst"), "Europe/London");
+        assert_eq!(resolve_tz("london"), "Europe/London");
+        assert_eq!(
+            tr("2026-07-15T12:00:00Z", &resolve_tz("gmt")),
+            "2026-07-15T12:00:00Z"
+        );
+    }
+
+    #[test]
     fn resolve_tz_numeric_offsets() {
         assert_eq!(resolve_tz("-7"), "Etc/GMT+7");
         assert_eq!(resolve_tz("+9"), "Etc/GMT-9");

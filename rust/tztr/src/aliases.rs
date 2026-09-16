@@ -1,28 +1,29 @@
 // Timezone aliases — tz abbreviations plus city nicknames. Mirrors
-// `TIMEZONE_ALIASES` in lib/tztr.rb. Ruby's hash lets a later key overwrite an
-// earlier one; only `gmt` is duplicated there (UTC, then Europe/London), so the
-// effective value Europe/London is what appears here.
+// `TIMEZONE_ALIASES` in lib/tztr.rb, which `-l` prints in sorted order.
+//
+// Sortedness is load-bearing (it is what `-l` prints) and this table is
+// hand-written, so `alias_table_is_sorted_and_unique` guards it.
 
 /// All timezone aliases as `(alias, IANA name)` pairs, sorted by alias.
 pub fn timezone_aliases() -> &'static [(&'static str, &'static str)] {
     &[
+        ("aedt", "Australia/Sydney"),
+        ("aest", "Australia/Sydney"),
         ("akdt", "America/Anchorage"),
         ("akst", "America/Anchorage"),
         ("alaska", "America/Anchorage"),
         ("amsterdam", "Europe/Amsterdam"),
         ("anchorage", "America/Anchorage"),
         ("auckland", "Pacific/Auckland"),
-        ("aedt", "Australia/Sydney"),
-        ("aest", "Australia/Sydney"),
         ("beijing", "Asia/Shanghai"),
         ("berlin", "Europe/Berlin"),
         ("boston", "America/New_York"),
         ("bst", "Europe/London"),
+        ("cdt", "America/Chicago"),
         ("central", "America/Chicago"),
         ("cest", "Europe/Berlin"),
         ("cet", "Europe/Berlin"),
         ("chicago", "America/Chicago"),
-        ("cdt", "America/Chicago"),
         ("cst", "America/Chicago"),
         ("cst_china", "Asia/Shanghai"),
         ("ct", "America/Chicago"),
@@ -33,7 +34,7 @@ pub fn timezone_aliases() -> &'static [(&'static str, &'static str)] {
         ("edt", "America/New_York"),
         ("est", "America/New_York"),
         ("et", "America/New_York"),
-        ("gmt", "Europe/London"),
+        ("gmt", "UTC"),
         ("hawaii", "Pacific/Honolulu"),
         ("hkt", "Asia/Hong_Kong"),
         ("hong_kong", "Asia/Hong_Kong"),
@@ -45,9 +46,9 @@ pub fn timezone_aliases() -> &'static [(&'static str, &'static str)] {
         ("kst", "Asia/Seoul"),
         ("la", "America/Los_Angeles"),
         ("london", "Europe/London"),
+        ("mdt", "America/Denver"),
         ("miami", "America/New_York"),
         ("mountain", "America/Denver"),
-        ("mdt", "America/Denver"),
         ("mst", "America/Denver"),
         ("mt", "America/Denver"),
         ("mumbai", "Asia/Kolkata"),
