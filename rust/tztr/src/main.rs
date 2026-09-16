@@ -9,7 +9,10 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
-use tztr::{matches, resolve_tz, timezone_aliases, translate, translate_bytes, Format, Match};
+use tztr::{
+    has_bare_timestamp, matches, resolve_tz, timezone_aliases, today_in_zone, translate,
+    translate_bytes, Format, Match,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -46,6 +49,8 @@ Examples:
 
 struct Options {
     from: Option<String>,
+    /// `from` was defaulted from `$TZ` rather than chosen with `-f`.
+    from_is_implicit: bool,
     to: String,
     format: Option<Format>,
     date: Option<String>,
@@ -177,6 +182,7 @@ fn run() -> Result<ExitCode, String> {
 
     let zone = |input: &str| resolve_tz(input).map_err(|e| e.to_string());
     let to = zone(to_arg.as_deref().or(local_tz.as_deref()).unwrap_or("UTC"))?;
+    let from_is_implicit = from.is_none() && local_tz.is_some();
     let from = match from.as_deref().or(local_tz.as_deref()) {
         Some(f) => Some(zone(f)?),
         None => None,
@@ -189,6 +195,7 @@ fn run() -> Result<ExitCode, String> {
 
     let opts = Options {
         from,
+        from_is_implicit,
         to,
         format,
         date,
@@ -247,33 +254,45 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// What the line loop carries between lines: where output goes, the `-j` buffer
+/// (that mode has to see every match before it can print an array), and whether
+/// `-v` has already disclosed its assumptions.
+struct Sink<W: Write> {
+    out: W,
+    collected: Vec<Match>,
+    disclosed: bool,
+}
+
 fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
     let stdout = io::stdout();
-    let mut out = stdout.lock();
-    let mut collected: Vec<Match> = Vec::new();
+    let mut sink = Sink {
+        out: stdout.lock(),
+        collected: Vec::new(),
+        disclosed: false,
+    };
 
     let result = (|| -> io::Result<()> {
         if opts.files.is_empty() {
             let stdin = io::stdin();
             for_each_line(stdin.lock(), |line| {
-                handle_line(opts, json_mode, line, &mut out, &mut collected)
+                handle_line(opts, json_mode, line, &mut sink)
             })?;
         } else {
             for file in &opts.files {
                 let f = fs::File::open(file)?;
                 for_each_line(BufReader::new(f), |line| {
-                    handle_line(opts, json_mode, line, &mut out, &mut collected)
+                    handle_line(opts, json_mode, line, &mut sink)
                 })?;
             }
         }
         if opts.json {
             let arr = Value::Array(
-                collected
+                sink.collected
                     .iter()
                     .map(|m| json_value(m, opts.detect))
                     .collect(),
             );
-            writeln!(out, "{}", serde_json::to_string_pretty(&arr).unwrap())?;
+            writeln!(sink.out, "{}", serde_json::to_string_pretty(&arr).unwrap())?;
         }
         Ok(())
     })();
@@ -282,17 +301,35 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Say out loud what a bare timestamp forced us to assume: the source zone,
+/// taken from `$TZ` rather than chosen, and today's date for DST. A tester got
+/// a wrong answer from exactly these two silent assumptions and only caught it
+/// because a bare line and an ISO line in the same output disagreed by an hour.
+/// stderr only, so `-j`/`-J` stdout stays clean JSON.
+fn disclose_assumptions(opts: &Options) {
+    if let Some(from) = opts.from.as_deref().filter(|_| opts.from_is_implicit) {
+        eprintln!("tztr: from={from} (implicit, from $TZ) to={}", opts.to);
+    }
+    if opts.date.is_none() {
+        let zone = opts.from.as_deref().unwrap_or(&opts.to);
+        eprintln!(
+            "tztr: no -d given, assuming {} for DST resolution",
+            today_in_zone(zone)
+        );
+    }
+}
+
 /// Handle one raw input line. A line that is not valid UTF-8 still has its
 /// timestamps converted, but every byte around them survives untouched — these
 /// are people's logs, and lossy decoding rewrote them. Structured modes drop
 /// such a line instead: raw bytes in a JSON stream corrupt it for the reader.
-fn handle_line(
+fn handle_line<W: Write>(
     opts: &Options,
     json_mode: bool,
     raw: &[u8],
-    out: &mut dyn Write,
-    collected: &mut Vec<Match>,
+    sink: &mut Sink<W>,
 ) -> io::Result<()> {
+    let out = &mut sink.out;
     let line = match std::str::from_utf8(raw) {
         Ok(line) => line,
         Err(_) => {
@@ -309,6 +346,12 @@ fn handle_line(
         }
     };
 
+    if opts.verbose && !opts.detect && !sink.disclosed && has_bare_timestamp(line) {
+        sink.disclosed = true;
+        disclose_assumptions(opts);
+    }
+    let out = &mut sink.out;
+
     if json_mode {
         let ms = matches(
             line,
@@ -323,7 +366,7 @@ fn handle_line(
                 writeln!(out, "{}", to_json(&m, opts.detect))?;
             }
         } else {
-            collected.extend(ms);
+            sink.collected.extend(ms);
         }
     } else if opts.detect {
         for m in matches(line, &opts.to, opts.from.as_deref(), None, true, None) {

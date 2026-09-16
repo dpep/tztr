@@ -231,6 +231,62 @@ fn aborts_on_unparseable_date() {
     assert!(!ok);
 }
 
+// --- B16: -v discloses what it assumed --------------------------------------
+
+/// `-v` over a bare time, with `$TZ` supplying the source zone.
+fn verbose_bare(args: &[&str]) -> Output {
+    run_tz(b"15:30\n", args, Some("America/Los_Angeles"))
+}
+
+#[test]
+fn verbose_discloses_the_assumptions_a_bare_timestamp_forces() {
+    let o = verbose_bare(&["-v", "-t", "nyc"]);
+    assert!(o.ok, "{}", o.stderr);
+    let lines: Vec<&str> = o.stderr.lines().collect();
+    assert!(
+        lines.contains(&"tztr: from=America/Los_Angeles (implicit, from $TZ) to=America/New_York"),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("tztr: no -d given, assuming ")
+                && l.ends_with(" for DST resolution")),
+        "{lines:?}"
+    );
+    assert!(!o.out().contains("tztr:"), "diagnostics leaked to stdout");
+}
+
+#[test]
+fn verbose_stays_quiet_when_nothing_was_assumed() {
+    // -f and -d given: both assumptions are the user's, not ours.
+    let o = verbose_bare(&["-v", "-f", "pst", "-t", "nyc", "-d", "2026-01-15"]);
+    assert!(!o.stderr.contains("implicit"), "{}", o.stderr);
+    assert!(!o.stderr.contains("no -d given"), "{}", o.stderr);
+
+    // A timestamp carrying its own zone and date assumes nothing.
+    let o = run_tz(
+        b"2026-04-03T12:00:00Z\n",
+        &["-v", "-t", "nyc"],
+        Some("America/Los_Angeles"),
+    );
+    assert!(!o.stderr.contains("implicit"), "{}", o.stderr);
+    assert!(!o.stderr.contains("no -d given"), "{}", o.stderr);
+}
+
+#[test]
+fn verbose_discloses_once_and_leaves_structured_stdout_clean() {
+    let o = run_tz(
+        b"15:30\n16:30\n17:30\n",
+        &["-v", "-t", "nyc", "-j"],
+        Some("America/Los_Angeles"),
+    );
+    assert!(o.ok, "{}", o.stderr);
+    serde_json::from_str::<serde_json::Value>(o.out()).expect("stdout is still JSON");
+    assert_eq!(o.stderr.matches("(implicit, from $TZ)").count(), 1);
+    assert_eq!(o.stderr.matches("no -d given").count(), 1);
+}
+
 // --- B12/B15: help text and the `--` terminator -----------------------------
 
 #[test]

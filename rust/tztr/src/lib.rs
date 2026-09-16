@@ -279,6 +279,28 @@ fn convert_match(
     Some(format_time(&zoned, format, m))
 }
 
+/// Whether `line` carries a timestamp with neither a zone nor a date — the
+/// case where converting it means assuming both. The CLI asks so that `-v` can
+/// disclose those assumptions instead of answering silently.
+pub fn has_bare_timestamp(line: &str) -> bool {
+    patterns()
+        .iter()
+        .find(|p| p.is_match(line.as_bytes()))
+        .is_some_and(|p| {
+            p.find_iter(line.as_bytes()).any(|m| {
+                let s = ascii(m.as_bytes());
+                detect_format(s) == "time" && detect_zone(s).is_none()
+            })
+        })
+}
+
+/// Today's date in `tz` as `YYYY-MM-DD` — the date a date-less timestamp is
+/// resolved against when no reference date is given.
+pub fn today_in_zone(tz: &str) -> String {
+    let (y, m, d) = today_in(&resolve_zone(tz));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// Label the detected format. Mirrors `Tztr.detect_format`.
 pub fn detect_format(s: &str) -> &'static str {
     if iso_t_re().is_match(s) {
