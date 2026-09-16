@@ -82,15 +82,21 @@ fn patterns() -> &'static [Regex] {
             let tz = format!("(?:{zone}|[+-]\\d{{4}})");
             // Seconds and fractional seconds, both optional.
             let secs = r"(?::\d{2}(?:\.\d+)?)?";
+            // A meridiem, optionally followed by a zone ("3:45 PM PST").
+            let mer = format!(r" ?[AaPp]\.?[Mm]\.?(?: ?{tz})?");
             [
                 // ISO 8601 with Z or offset
                 r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})".to_string(),
                 // ISO 8601 without timezone
                 r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
+                // Date space 12-hour time
+                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)?{mer}\b"),
                 // Date space time with tz
                 format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)? ?{tz}\b"),
                 // Date space time
                 r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
+                // 12-hour time
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs}{mer}\b"),
                 // Time with tz
                 format!(r"\b\d{{1,2}}:\d{{2}}{secs} ?{tz}\b"),
                 // Time with offset
@@ -253,7 +259,7 @@ fn components_re() -> &'static Regex {
     RE.get_or_init(|| {
         let zone = zone_alternation();
         Regex::new(&format!(
-            r"^(?:(\d{{4}})-(\d{{2}})-(\d{{2}})[T ])?(\d{{1,2}}):(\d{{2}})(?::(\d{{2}})(?:\.(\d+))?)?\s?({zone}|[+-]\d{{2}}:?\d{{2}}|[+-]\d{{4}})?$",
+            r"^(?:(?<y>\d{{4}})-(?<mo>\d{{2}})-(?<d>\d{{2}})[T ])?(?<h>\d{{1,2}}):(?<mi>\d{{2}})(?::(?<s>\d{{2}})(?:\.(?<frac>\d+))?)?(?: ?(?<mer>[AaPp])\.?[Mm]\.?)?\s?(?<zone>{zone}|[+-]\d{{2}}:?\d{{2}}|[+-]\d{{4}})?$",
         ))
         .unwrap()
     })
@@ -286,12 +292,14 @@ fn parse(
     };
 
     let caps = components_re().captures(s)?;
+    let group = |n| caps.name(n).map(|m| m.as_str());
 
-    let hour: i8 = caps[4].parse().ok()?;
-    let minute: i8 = caps[5].parse().ok()?;
-    let second: i8 = caps.get(6).map_or(0, |m| m.as_str().parse().unwrap_or(0));
-    let nanos = caps.get(7).map_or(0, |m| frac_to_nanos(m.as_str()));
-    let zone_token = caps.get(8).map(|m| m.as_str()).unwrap_or("");
+    let hour: i8 = group("h")?.parse().ok()?;
+    let minute: i8 = group("mi")?.parse().ok()?;
+    let second: i8 = group("s").map_or(0, |v| v.parse().unwrap_or(0));
+    let nanos = group("frac").map_or(0, frac_to_nanos);
+    let zone_token = group("zone").unwrap_or("");
+    let hour = apply_meridiem(hour, group("mer"));
 
     // The zone the wall-clock time is anchored in — and, for date-less inputs,
     // the zone whose "today" fills the missing date (mirrors Ruby's
@@ -310,12 +318,8 @@ fn parse(
         to_tz.clone()
     };
 
-    let (year, month, day) = match (caps.get(1), caps.get(2), caps.get(3)) {
-        (Some(y), Some(mo), Some(d)) => (
-            y.as_str().parse().ok()?,
-            mo.as_str().parse().ok()?,
-            d.as_str().parse().ok()?,
-        ),
+    let (year, month, day) = match (group("y"), group("mo"), group("d")) {
+        (Some(y), Some(mo), Some(d)) => (y.parse().ok()?, mo.parse().ok()?, d.parse().ok()?),
         _ => today_in(&anchor),
     };
 
@@ -323,6 +327,16 @@ fn parse(
     let instant = civil.to_zoned(anchor).ok()?;
 
     Some(instant.with_time_zone(to_tz.clone()))
+}
+
+/// Fold a 12-hour clock reading onto the 24-hour clock. Out-of-range readings
+/// (`15:30 PM`) are left alone — the calendar check downstream decides.
+fn apply_meridiem(hour: i8, meridiem: Option<&str>) -> i8 {
+    match meridiem.map(str::to_ascii_lowercase).as_deref() {
+        Some("p") if hour < 12 => hour + 12,
+        Some("a") if hour == 12 => 0,
+        _ => hour,
+    }
 }
 
 fn today_in(tz: &TimeZone) -> (i16, i8, i8) {
@@ -733,6 +747,46 @@ mod tests {
             tr("2026-04-03 12:00:00 ERROR db failed", "UTC"),
             "2026-04-03 12:00:00 UTC ERROR db failed"
         );
+    }
+
+    // --- B2: 12-hour clock ------------------------------------------------
+
+    #[test]
+    fn applies_the_meridiem() {
+        for (input, expected) in [
+            ("11:30:00 PM", "23:30:00 UTC"),
+            ("12:30:00 AM", "00:30:00 UTC"),
+            ("12:30:00 PM", "12:30:00 UTC"),
+            ("1:00:00 PM", "13:00:00 UTC"),
+            ("11:59:59 PM", "23:59:59 UTC"),
+            ("12:00 AM", "00:00 UTC"),
+            ("12:00 PM", "12:00 UTC"),
+        ] {
+            assert_eq!(tr(input, "UTC"), expected, "{input}");
+        }
+        assert_eq!(
+            tr("2026-04-03 03:45:00 PM", "UTC"),
+            "2026-04-03 15:45:00 UTC"
+        );
+    }
+
+    #[test]
+    fn a_twelve_hour_time_may_carry_a_zone() {
+        assert_eq!(tr("3:45 PM PST", "UTC"), "23:45 UTC");
+        // The meridiem is case-insensitive; zone abbreviations are not, so a
+        // lowercase `pst` is ordinary text and is left where it is.
+        assert_eq!(tr("3:45 pm pst", "UTC"), "15:45 UTC pst");
+        assert_eq!(
+            tr("2026-04-03 03:45:00 PM PST", "UTC"),
+            "2026-04-03 23:45:00 UTC"
+        );
+    }
+
+    #[test]
+    fn meridiem_is_not_read_as_a_zone() {
+        let m = matches("11:30:00 PM", "UTC", None, None, false, true, None);
+        assert_eq!(m[0].original, "11:30:00 PM");
+        assert_eq!(m[0].detected_tz, None);
     }
 
     #[test]
