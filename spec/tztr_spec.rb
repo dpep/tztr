@@ -504,6 +504,19 @@ RSpec.describe Tztr do
       expect(status).not_to be_success
     end
 
+    it "reports a missing file without a backtrace" do
+      expect(run_fail("/tmp/tztr-does-not-exist.txt"))
+        .to eq("tztr: No such file or directory (os error 2)")
+    end
+
+    it "reports a directory argument without a backtrace" do
+      expect(run_fail("/tmp")).to eq("tztr: Is a directory (os error 21)")
+    end
+
+    it "reports an unknown flag without a backtrace" do
+      expect(run_fail("--bogus")).to eq("tztr: invalid option: --bogus")
+    end
+
     it "preserves bytes that are not valid UTF-8" do
       input = "2026-04-03T12:00:00Z \xff\xfe junk\n2026-04-03T13:00:00Z ok\n".b
       out, _, status = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "pst", stdin_data: input)

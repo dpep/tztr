@@ -85,7 +85,11 @@ parser = OptionParser.new do |opts|
   opts.separator "  echo '2026-04-03T12:00:00Z' | tztr --detect -j"
   opts.separator "  echo '15:30' | tztr -f pacific -t utc -d 2026-01-15"
 end
-parser.parse!
+begin
+  parser.parse!
+rescue OptionParser::ParseError => e
+  abort "#{parser.program_name}: #{e.message}"
+end
 
 json_mode = options[:json] || options[:ndjson]
 
@@ -130,38 +134,44 @@ if ARGV.empty? && $stdin.tty?
   exit
 end
 
-if options[:inplace]
-  abort "#{parser.program_name}: -i requires a file argument" if ARGV.empty?
+begin
+  if options[:inplace]
+    abort "#{parser.program_name}: -i requires a file argument" if ARGV.empty?
 
-  ARGV.each do |file|
-    content = File.read(file)
-    translated = content.each_line.map do |line|
-      Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], date: options[:date])
-    end.join
-    File.write(file, translated) if translated != content
-  end
-else
-  collected = [] if options[:json]
+    ARGV.each do |file|
+      content = File.read(file)
+      translated = content.each_line.map do |line|
+        Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], date: options[:date])
+      end.join
+      File.write(file, translated) if translated != content
+    end
+  else
+    collected = [] if options[:json]
 
-  inputs = ARGV.empty? ? [$stdin] : ARGV.map { |f| File.open(f) }
-  inputs.each do |input|
-    input.each_line do |line|
-      if json_mode
-        ms = Tztr.matches(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], detect: options[:detect], date: options[:date])
-        if options[:ndjson]
-          ms.each { |m| puts JSON.generate(m) }
+    inputs = ARGV.empty? ? [$stdin] : ARGV.map { |f| File.open(f) }
+    inputs.each do |input|
+      input.each_line do |line|
+        if json_mode
+          ms = Tztr.matches(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], detect: options[:detect], date: options[:date])
+          if options[:ndjson]
+            ms.each { |m| puts JSON.generate(m) }
+          else
+            collected.concat(ms)
+          end
+        elsif options[:detect]
+          Tztr.matches(line, to: options[:to], from: options[:from], detect: true).each do |m|
+            puts [m[:original], m[:detected_format], m[:detected_tz]].join("\t")
+          end
         else
-          collected.concat(ms)
+          print Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], date: options[:date])
         end
-      elsif options[:detect]
-        Tztr.matches(line, to: options[:to], from: options[:from], detect: true).each do |m|
-          puts [m[:original], m[:detected_format], m[:detected_tz]].join("\t")
-        end
-      else
-        print Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], local: options[:local], date: options[:date])
       end
     end
-  end
 
-  puts JSON.pretty_generate(collected) if options[:json]
+    puts JSON.pretty_generate(collected) if options[:json]
+  end
+rescue SystemCallError => e
+  # Ruby's own message carries the syscall and path; the Rust port prints the
+  # bare strerror, and the two must read the same.
+  abort "#{parser.program_name}: #{SystemCallError.new(e.errno).message} (os error #{e.errno})"
 end
