@@ -206,6 +206,23 @@ RSpec.describe Tztr do
         .to eq("22:30 UTC")
     end
 
+    it "picks the earlier occurrence of a repeated fall-back hour" do
+      expect(Tztr.translate("2026-11-01 01:30:00", from: "America/New_York", to: "UTC"))
+        .to eq("2026-11-01 05:30:00 UTC")
+      expect(Tztr.translate("2026-10-25 02:30:00", from: "Europe/Berlin", to: "UTC"))
+        .to eq("2026-10-25 00:30:00 UTC")
+    end
+
+    it "picks the earlier occurrence for a time-only input too" do
+      expect(Tztr.translate("01:30", from: "America/New_York", to: "UTC", date: "2026-11-01"))
+        .to eq("05:30 UTC")
+    end
+
+    it "leaves the nonexistent spring-forward hour alone" do
+      expect(Tztr.translate("2026-03-08 02:30:00", from: "America/New_York", to: "UTC"))
+        .to eq("2026-03-08 07:30:00 UTC")
+    end
+
     it "ignores the date for inputs that already carry one" do
       expect(Tztr.translate("2026-07-15T12:00:00Z", to: "UTC", date: "2026-01-15"))
         .to eq("2026-07-15T12:00:00Z")

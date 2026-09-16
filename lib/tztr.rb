@@ -213,7 +213,7 @@ module Tztr
       in_zone(str, from, to)
     else
       ENV['TZ'] = to
-      Time.parse(str)
+      earliest_occurrence(Time.parse(str))
     end
   end
 
@@ -226,9 +226,17 @@ module Tztr
 
   def in_zone(str, zone, to)
     ENV['TZ'] = zone
-    utc = Time.parse(str).utc
+    utc = earliest_occurrence(Time.parse(str)).utc
     ENV['TZ'] = to
     utc.localtime
+  end
+
+  # A wall clock repeated by a DST fall-back resolves to the earlier
+  # (daylight) occurrence, as Temporal, ICU, RFC 5545 and date(1) do.
+  # Time.parse picks the later one.
+  def earliest_occurrence(time)
+    earlier = time - 3600
+    earlier.strftime('%F %T') == time.strftime('%F %T') ? earlier : time
   end
 
   def time_only?(str)
