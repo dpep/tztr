@@ -103,6 +103,8 @@ if options[:help]
   exit
 end
 
+implicit_from = options[:from].nil? && !local_tz.nil?
+
 begin
   options[:to] = Tztr.resolve_tz(options[:to])
   options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
@@ -116,8 +118,22 @@ if options[:inplace] && (json_mode || options[:detect])
   abort "#{parser.program_name}: -i cannot be combined with --json/--ndjson/--detect"
 end
 
-if options[:verbose]
-  $stderr.puts "tztr: from=#{options[:from] || 'auto'} to=#{options[:to]}"
+# An implicit from is announced by `disclose` below instead, and only if some
+# timestamp actually uses it -- naming it here would claim a source zone that a
+# timestamp carrying its own never consults.
+if options[:verbose] && !implicit_from
+  warn "#{parser.program_name}: from=#{options[:from] || 'auto'} to=#{options[:to]}"
+end
+
+# A bare time silently borrows its source zone from $TZ and resolves DST
+# against today. Say so, once, the first time it actually happens.
+disclosed = false
+disclose = lambda do |line|
+  return if disclosed || !Tztr.bare_timestamp?(line)
+
+  disclosed = true
+  warn "#{parser.program_name}: from=#{options[:from]} (implicit, from $TZ) to=#{options[:to]}" if implicit_from
+  warn "#{parser.program_name}: no -d given, assuming #{Date.today.strftime('%Y-%m-%d')} for DST resolution" unless options[:date]
 end
 
 $stdout.sync = true
@@ -134,6 +150,7 @@ begin
     ARGV.each do |file|
       content = File.read(file)
       translated = content.each_line.map do |line|
+        disclose.call(line) if options[:verbose]
         Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], date: options[:date])
       end.join
       File.write(file, translated) if translated != content
@@ -144,6 +161,8 @@ begin
     inputs = ARGV.empty? ? [$stdin] : ARGV.map { |f| File.open(f) }
     inputs.each do |input|
       input.each_line do |line|
+        disclose.call(line) if options[:verbose]
+
         if json_mode
           ms = Tztr.matches(line, to: options[:to], from: options[:from], format: options[:format], detect: options[:detect], date: options[:date])
           if options[:ndjson]

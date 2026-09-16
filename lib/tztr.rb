@@ -207,6 +207,16 @@ module Tztr
     results
   end
 
+  # A timestamp carrying neither a date nor a zone. Both its source zone and
+  # its DST offset are then assumptions, which -v discloses.
+  def bare_timestamp?(line)
+    line = scannable(line)
+    pattern = PATTERNS.find { |p| line.match?(p) }
+    return false unless pattern
+
+    line.scan(pattern).any? { |match| detect_format(match) == 'time' && detect_zone(match).nil? }
+  end
+
   def convert_match(match, from:, to:, format:, date: nil)
     time = parse(match, from:, to:, date:)
     format_time(time.localtime, format, match)

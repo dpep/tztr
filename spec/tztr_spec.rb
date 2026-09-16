@@ -538,6 +538,35 @@ RSpec.describe Tztr do
         .to eq("2026-04-03 05:00 PDT")
     end
 
+    it "accepts the -- terminator" do
+      expect(run("2026-04-03T12:00:00Z", "-t", "utc", "--")).to eq("2026-04-03T12:00:00Z")
+    end
+
+    it "discloses with -v what a bare timestamp assumed" do
+      _, err, = Open3.capture3(
+        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", stdin_data: "15:30\n"
+      )
+      expect(err).to include("tztr: from=America/Los_Angeles (implicit, from $TZ) to=America/New_York")
+      expect(err).to match(/^tztr: no -d given, assuming \d{4}-\d{2}-\d{2} for DST resolution$/)
+    end
+
+    it "says nothing about assumptions it did not make" do
+      _, err, = Open3.capture3(
+        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", "-f", "utc", "-d", "2026-01-15",
+        stdin_data: "15:30\n"
+      )
+      expect(err).not_to include("implicit")
+      expect(err).not_to include("assuming")
+    end
+
+    it "keeps stdout clean while disclosing under -j" do
+      out, err, = Open3.capture3(
+        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", "-j", stdin_data: "15:30\n"
+      )
+      expect(JSON.parse(out).first["original"]).to eq("15:30")
+      expect(err).to include("implicit, from $TZ")
+    end
+
     it "reports a missing file without a backtrace" do
       expect(run_fail("/tmp/tztr-does-not-exist.txt"))
         .to eq("tztr: No such file or directory (os error 2)")
