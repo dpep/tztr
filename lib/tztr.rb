@@ -101,6 +101,35 @@ module Tztr
 
   module_function
 
+  MONTHS = %w[
+    january february march april may june
+    july august september october november december
+  ].freeze
+
+  # The -d forms the README documents. Date.parse accepts far more than the
+  # Rust port's hand-rolled parser does, so both narrow to this set.
+  def normalize_date(input)
+    parts =
+      case input
+      when /\A(\d{4})-(\d{2})-(\d{2})\z/, %r{\A(\d{4})/(\d{2})/(\d{2})\z}, /\A(\d{4})(\d{2})(\d{2})\z/
+        [$1.to_i, $2.to_i, $3.to_i]
+      when /\A([A-Za-z]+)\.? (\d{1,2}),? (\d{4})\z/ # January 15, 2026 / Jan 15 2026
+        [$3.to_i, month_number($1), $2.to_i]
+      when /\A(\d{1,2}) ([A-Za-z]+)\.?,? (\d{4})\z/ # 15 January 2026
+        [$3.to_i, month_number($2), $1.to_i]
+      end
+
+    raise Error, "invalid date: #{input}" unless parts&.all? && Date.valid_date?(*parts)
+
+    format('%04d-%02d-%02d', *parts)
+  end
+
+  def month_number(name)
+    name = name.downcase
+    index = MONTHS.index { |month| month == name || (name.length == 3 && month.start_with?(name)) }
+    index && index + 1
+  end
+
   def resolve_tz(input)
     return if input.nil?
 

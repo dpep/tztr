@@ -106,18 +106,11 @@ begin
   options[:to] = Tztr.resolve_tz(options[:to])
   options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
   options[:local] = options[:to] == Tztr.resolve_tz(local_tz || 'UTC')
+  options[:date] = Tztr.normalize_date(options[:date]) if options[:date]
 rescue Tztr::Error => e
   abort "#{parser.program_name}: #{e.message}"
 end
 ENV['TZ'] = options[:to]
-
-if options[:date]
-  begin
-    options[:date] = Date.parse(options[:date]).strftime('%Y-%m-%d')
-  rescue ArgumentError
-    abort "#{parser.program_name}: invalid date: #{options[:date]}"
-  end
-end
 
 if options[:inplace] && (json_mode || options[:detect])
   abort "#{parser.program_name}: -i cannot be combined with --json/--ndjson/--detect"

@@ -298,6 +298,27 @@ RSpec.describe Tztr do
     end
   end
 
+  describe ".normalize_date" do
+    it "accepts the documented forms" do
+      expect(Tztr.normalize_date("2026-01-15")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("2026/01/15")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("20260115")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("January 15, 2026")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("Jan 15 2026")).to eq("2026-01-15")
+      expect(Tztr.normalize_date("15 January 2026")).to eq("2026-01-15")
+    end
+
+    it "rejects a date that never happened" do
+      expect { Tztr.normalize_date("2026-02-30") }.to raise_error(Tztr::Error, "invalid date: 2026-02-30")
+    end
+
+    it "rejects forms outside the documented set" do
+      expect { Tztr.normalize_date("15/01/2026") }.to raise_error(Tztr::Error)
+      expect { Tztr.normalize_date("Mar 3") }.to raise_error(Tztr::Error)
+      expect { Tztr.normalize_date("not-a-date") }.to raise_error(Tztr::Error)
+    end
+  end
+
   describe "aliases in translate" do
     it "accepts city name as to" do
       expect(Tztr.translate("2026-04-03T12:00:00Z", to: "sf"))
@@ -500,8 +521,11 @@ RSpec.describe Tztr do
     end
 
     it "aborts on an unparseable date" do
-      out, status = Open3.capture2(TZTR, "-d", "not-a-date", stdin_data: "15:30 PST")
-      expect(status).not_to be_success
+      expect(run_fail("-d", "not-a-date", input: "15:30 PST")).to eq("tztr: invalid date: not-a-date")
+    end
+
+    it "aborts on a date that never happened" do
+      expect(run_fail("-d", "2026-02-30", input: "15:30 PST")).to eq("tztr: invalid date: 2026-02-30")
     end
 
     it "reports a missing file without a backtrace" do
