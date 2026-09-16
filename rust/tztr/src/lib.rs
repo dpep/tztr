@@ -8,9 +8,9 @@
 //! Timezone math uses `jiff`, which reads the system tz database — the same
 //! source Ruby's `Time` uses via `ENV['TZ']` — so DST behavior matches.
 
-use jiff::civil::DateTime;
+use jiff::civil::{Date, DateTime};
 use jiff::tz::{Offset, TimeZone};
-use jiff::Zoned;
+use jiff::{Span, Zoned};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -360,10 +360,39 @@ fn parse(
         _ => today_in(&anchor),
     };
 
-    let civil = DateTime::new(year, month, day, hour, minute, second, nanos).ok()?;
+    let civil = civil_datetime(
+        Date::new(year, month, day).ok()?,
+        hour,
+        minute,
+        second,
+        nanos,
+    )?;
     let instant = civil.to_zoned(anchor).ok()?;
 
     Some(instant.with_time_zone(to_tz.clone()))
+}
+
+/// Place a wall-clock reading on `date`, carrying the two overflows a clock
+/// legitimately produces: `24:00`, the midnight that ends a day, and `:60`, a
+/// leap second. Anything further out of range (`25:00`, `12:60`) is not a time
+/// at all — the caller leaves that text exactly as it found it.
+fn civil_datetime(date: Date, hour: i8, minute: i8, second: i8, nanos: i32) -> Option<DateTime> {
+    let in_range = (0..=59).contains(&minute)
+        && (0..=60).contains(&second)
+        && match hour {
+            0..=23 => true,
+            24 => minute == 0 && second == 0,
+            _ => false,
+        };
+    if !in_range {
+        return None;
+    }
+
+    let span = Span::new()
+        .hours(i64::from(hour))
+        .minutes(i64::from(minute))
+        .seconds(i64::from(second));
+    date.at(0, 0, 0, nanos).checked_add(span).ok()
 }
 
 /// Fold a 12-hour clock reading onto the 24-hour clock. Out-of-range readings
@@ -816,6 +845,83 @@ mod tests {
         assert_eq!(
             tr("2026-04-03 12:00:00 ERROR db failed", "UTC"),
             "2026-04-03 12:00:00 UTC ERROR db failed"
+        );
+    }
+
+    // --- B6: DST transitions ----------------------------------------------
+
+    #[test]
+    fn ambiguous_wall_clock_takes_the_earlier_occurrence() {
+        // A repeated hour resolves to the first (daylight) occurrence: jiff's
+        // `compatible` disambiguation, which is also macOS date(1), Temporal,
+        // RFC 5545 and ICU. Pinned so a jiff default change cannot move it by
+        // an hour, twice a year, in every DST zone, without a test failing.
+        let from = Some("America/New_York");
+        assert_eq!(
+            translate("2026-11-01 01:30:00", "UTC", from, None, None),
+            "2026-11-01 05:30:00 UTC" // EDT (-4), not EST (-5)
+        );
+        assert_eq!(
+            translate("01:30", "UTC", from, None, Some("2026-11-01")),
+            "05:30 UTC"
+        );
+        assert_eq!(
+            translate(
+                "2026-10-25 02:30:00",
+                "UTC",
+                Some("Europe/Berlin"),
+                None,
+                None
+            ),
+            "2026-10-25 00:30:00 UTC" // CEST (+2), not CET (+1)
+        );
+    }
+
+    #[test]
+    fn nonexistent_wall_clock_springs_forward() {
+        assert_eq!(
+            translate(
+                "2026-03-08 02:30:00",
+                "UTC",
+                Some("America/New_York"),
+                None,
+                None
+            ),
+            "2026-03-08 07:30:00 UTC"
+        );
+    }
+
+    // --- B7: overflowing times normalize, impossible dates do not ----------
+
+    #[test]
+    fn legal_but_overflowing_times_normalize() {
+        assert_eq!(tr("24:00 UTC", "UTC"), "00:00 UTC");
+        assert_eq!(tr("23:59:60 UTC", "UTC"), "00:00:00 UTC");
+    }
+
+    #[test]
+    fn genuinely_out_of_range_times_are_left_alone() {
+        for input in ["25:00 UTC", "12:60 UTC", "24:00:01 UTC"] {
+            assert_eq!(tr(input, "UTC"), input, "{input}");
+        }
+    }
+
+    #[test]
+    fn impossible_dates_pass_through_untouched() {
+        // Rewriting 2026-02-30 to 2026-03-02 moves a logged event to another
+        // day with no signal. Leave it exactly as found.
+        for input in [
+            "2026-02-30T12:00:00Z",
+            "2026-02-29T12:00:00Z",
+            "2026-13-03T12:00:00Z",
+        ] {
+            assert_eq!(tr(input, "America/Los_Angeles"), input, "{input}");
+        }
+        // ...and a real leap day still converts.
+        assert_eq!(
+            tr("2028-02-29T12:00:00Z", "UTC"),
+            "2028-02-29T12:00:00Z",
+            "2028 is a leap year"
         );
     }
 
