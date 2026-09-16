@@ -46,8 +46,19 @@ check:
 fmt:
 	cd $(RUST_DIR) && $(CARGO) fmt
 
+# A bare `ruby` here is macOS system Ruby 2.6 whenever rbenv's shims are off
+# PATH and `rbenv global` is unset, and the harness then reports every case as
+# failing for reasons unrelated to parity. Pick the first interpreter that
+# satisfies the gemspec instead; override with `make parity RUBY=/path/to/ruby`.
+RUBY_CANDIDATES := ruby $(shell rbenv root 2>/dev/null)/versions/*/bin/ruby /opt/homebrew/opt/ruby/bin/ruby
+RUBY ?= $(shell for r in $(RUBY_CANDIDATES); do \
+	  "$$r" -e 'exit Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("3.2")' 2>/dev/null \
+	    && echo "$$r" && break; \
+	done)
+
 parity: build
-	ruby script/parity.rb
+	@test -n "$(RUBY)" || { echo "make parity: no Ruby >= 3.2 found (tried: $(RUBY_CANDIDATES))"; exit 1; }
+	$(RUBY) script/parity.rb
 
 hooks:
 	git config core.hooksPath .githooks

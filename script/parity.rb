@@ -1,29 +1,84 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Ruby <-> Rust CLI parity harness. Runs a matrix of (args, input, TZ) through
-# both binaries and diffs stdout. JSON modes are compared semantically (parsed),
-# everything else byte-for-byte. Exits non-zero on any mismatch.
+# Ruby <-> Rust CLI differential tester. Runs a matrix of (args, stdin, TZ,
+# files) through both binaries and diffs stdout, stderr, exit code, and any
+# files the run touched -- all byte-for-byte. Exits non-zero on any mismatch.
 #
+#   make parity                      # preferred: picks a Ruby >= 3.2 for you
 #   ruby script/parity.rb            # uses rust/target/release/tztr
 #   RUST_BIN=path ruby script/parity.rb
+#   PARITY_JOBS=1 ruby script/parity.rb        # serial, for debugging
+#   PARITY_GROUPS=errors,files ruby script/parity.rb   # run a subset
 #
 # Build the Rust binary first: cargo build --release --manifest-path rust/Cargo.toml
+#
+# Adding coverage: append to a GROUP section below. A case is a differential
+# check by default; give it `expect:` to also assert an absolute expectation
+# (see the "golden" group -- for behaviors where "both agree" isn't enough
+# because both could be wrong the same way).
+#
+# This file must PARSE on Ruby 2.6 even though it refuses to RUN there: Ruby
+# parses the whole file before executing a line, so modern syntax would bury
+# the version guard below under syntax errors. Hence no hash-value omission
+# (`foo:` for `foo: foo`) and nothing else newer than 2.6 above the guard.
 
-require "open3"
+require "etc"
+require "fileutils"
 require "json"
+require "open3"
+require "rbconfig"
+require "tmpdir"
 
-ROOT     = File.expand_path("..", __dir__)
-RUBY_BIN = File.join(ROOT, "bin", "tztr")
+# --- Ruby version guard -------------------------------------------------------
+# bin/tztr's `#!/usr/bin/env ruby` and a bare `ruby` both resolve to macOS
+# system Ruby 2.6 when rbenv's shims aren't on PATH. That produces a wall of
+# "failures" that have nothing to do with parity, so refuse to run at all.
+MIN_RUBY = "3.2"
+if Gem::Version.new(RUBY_VERSION) < Gem::Version.new(MIN_RUBY)
+  abort <<~MSG
+    script/parity.rb: needs Ruby >= #{MIN_RUBY}, got #{RUBY_VERSION}
+      interpreter: #{RbConfig.ruby}
+    The gemspec requires >= #{MIN_RUBY}; running the harness on an older Ruby reports
+    parity failures that are really just bin/tztr failing to load.
+    Use `make parity` (it finds a qualifying Ruby), or point it at one yourself:
+      make parity RUBY=/path/to/ruby
+  MSG
+end
+
+ROOT = File.expand_path("..", __dir__)
+require_relative "../lib/tztr" # for TIMEZONE_ALIASES -- the alias sweep stays current on its own
+
 RUST_BIN = ENV["RUST_BIN"] || File.join(ROOT, "rust", "target", "release", "tztr")
-
 abort "rust binary not found: #{RUST_BIN} (build it first)" unless File.executable?(RUST_BIN)
 
-# A fixed reference TZ keeps date-less inputs deterministic across both binaries
-# (they share the same wall clock, so "today" agrees).
-ENVS = ["UTC", "America/Los_Angeles", "America/New_York"].freeze
+# Invoke the Ruby CLI through *this* interpreter rather than its shebang, so the
+# version guard above actually governs what runs and PATH cannot swap it out.
+RUBY_CMD = [RbConfig.ruby, File.join(ROOT, "bin", "tztr")].freeze
+RUST_CMD = [RUST_BIN].freeze
 
-INPUTS = [
+# --- Case model ---------------------------------------------------------------
+# args    - argv. Runs in a scratch dir when files/dirs are given, so any path a
+#           binary prints is relative and identical on both sides.
+# stdin   - exact bytes on stdin (no newline is appended for you)
+# tz      - TZ value, or :unset to remove it from the environment
+# files   - { "name" => contents } created before the run
+# dirs    - directory names created before the run
+# expect  - optional ->(stdout, stderr, exitstatus) checked against both binaries
+CASES = []
+
+def add(group:, args: [], stdin: "", tz: "UTC", files: nil, dirs: nil, expect: nil)
+  CASES << { group: group, args: args, stdin: stdin, tz: tz, files: files, dirs: dirs, expect: expect }
+end
+
+# ==============================================================================
+# GROUP: core -- the (TZ x args x line) cross product
+# ==============================================================================
+
+CORE_ENVS = ["UTC", "America/Los_Angeles", "America/New_York"].freeze
+
+CORE_LINES = [
+  # --- well-formed, in-range
   "2026-04-03T12:00:00Z",
   "2026-04-03T12:00:00.123Z",
   "2026-04-03T05:00:00-07:00",
@@ -40,16 +95,49 @@ INPUTS = [
   "from 15:30 UTC to 16:45 UTC",
   "no timestamps here",
   "meeting at 12:00 EST and 09:00 PST",
-  "12:00 CET",      # unrecognized abbrev -> ignored, parsed in target
+  "12:00 CET",
   "2026-12-25 23:59:59 UTC",
+
+  # --- DST transitions: the ambiguous hour, the nonexistent hour
+  "2026-11-01 01:30:00",       # US fall back -- this wall clock happens twice
+  "2026-11-01 01:30:00 EST",
+  "2026-10-25 02:30:00",       # EU fall back
+  "2026-03-08 02:30:00",       # US spring forward -- this wall clock never happens
+  "2026-03-08 02:30:00 PST",
+
+  # --- out-of-range / impossible components
+  "24:00",
+  "23:59:60",
+  "2026-06-30 23:59:60 UTC",
+  "2026-02-29T12:00:00Z",      # 2026 is not a leap year
+  "2026-02-30T12:00:00Z",
+  "2026-04-03T12:00:00.123456789Z",
+
+  # --- zone-abbreviation allowlist: log levels must survive, real zones convert
+  "15:30 INFO server started",
+  "15:30 WARN disk low",
+  "2026-04-03 12:00:00 ERROR db failed",
+  "15:30 JST",
+  "15:30 CET",
+  "15:30 AEST",
+
+  # --- 12-hour times
+  "11:30:00 PM",
+  "12:30:00 AM",
+  "12:30:00 PM",
+  "1:00:00 PM",
+  "2026-04-03 03:45:00 PM",
+  "3:45 PM PST",
+  "11:30 p.m.",
 ].freeze
 
-ARG_SETS = [
+CORE_ARGS = [
   [],
   ["-t", "America/Los_Angeles"],
   ["-t", "sf"],
   ["-t", "nyc"],
   ["-t", "utc"],
+  ["-t", "gmt"],
   ["-t", "-7"],
   ["-t", "+9"],
   ["-f", "America/Los_Angeles", "-t", "UTC"],
@@ -61,59 +149,445 @@ ARG_SETS = [
   ["-t", "pst", "-J"],
   ["--detect"],
   ["--detect", "-j"],
+  ["--detect", "-J"],
   ["-t", "utc", "-d", "2026-01-15"],
   ["-t", "utc", "-d", "2026-07-15"],
   ["-t", "utc", "-d", "January 15, 2026"],
+  ["-t", "nyc", "-d", "2026-11-01"],   # reference date *is* the DST transition
+  ["-t", "nyc", "-d", "2026-03-08"],
   ["-h", "-j"],
   ["-h", "-J"],
-  ["-hj"],          # bundled short flags
-  ["-tsf"],         # value attached to a bundled flag
+  ["-hj"],                             # bundled short flags
+  ["-tsf"],                            # value attached to a bundled flag
   ["-vj"],
+  ["-v", "-t", "utc"],                 # stderr disclosure
+  ["-v", "-f", "utc", "-t", "pst"],    # explicit -f => startup line, no disclosure
+  # -F crossed with the structured modes (CLAUDE.md: every option must work in -j/-J)
+  ["-F", "short", "-t", "utc", "-j"],
+  ["-F", "iso", "-t", "pst", "-j"],
+  ["-F", "time", "-t", "pst", "-J"],
+  # long forms and --opt=value
+  ["--to", "sf"],
+  ["--from", "utc", "--to", "nyc"],
+  ["--to=sf"],
+  ["--format=short", "--to=utc"],
+  ["--json", "--to", "pst"],
+  ["--ndjson", "--format", "iso", "--to", "pst"],
+  ["--verbose", "--to", "utc"],
+  ["--date=2026-01-15", "--to=utc"],
+  ["-t", "nyc", "-d", "2026-11-01", "-j"],  # -d must shape -j too
+  ["--detect", "-F", "iso"],                # -F has nothing to shape under --detect
 ].freeze
 
-def run(bin, args, input, tz)
-  out, _err, status = Open3.capture3({ "TZ" => tz }, bin, *args, stdin_data: input)
-  [out, status.exitstatus]
-end
-
-def json_mode?(args)
-  args.include?("-j") || args.include?("--json") || args.include?("-J") || args.include?("--ndjson")
-end
-
-def normalize(out, args)
-  return out unless json_mode?(args)
-
-  if args.include?("-J") || args.include?("--ndjson")
-    out.each_line.map { |l| l.strip.empty? ? nil : JSON.parse(l) }.compact
-  else
-    JSON.parse(out)
+CORE_ENVS.each do |tz|
+  CORE_ARGS.each do |args|
+    CORE_LINES.each { |line| add(group: "core", args: args, stdin: "#{line}\n", tz: tz) }
   end
-rescue JSON::ParserError
-  out # fall back to raw compare if it isn't valid JSON
 end
 
-fails = 0
-total = 0
+# ==============================================================================
+# GROUP: payloads -- stdin shapes rather than line contents
+# ==============================================================================
 
-ENVS.each do |tz|
-  ARG_SETS.each do |args|
-    INPUTS.each do |input|
-      total += 1
-      stdin = input + "\n"
-      rb_out, rb_code = run(RUBY_BIN, args, stdin, tz)
-      rs_out, rs_code = run(RUST_BIN, args, stdin, tz)
+PAYLOADS = [
+  "",                                        # empty stdin
+  "15:30 UTC",                               # no trailing newline
+  "\n",                                      # blank line
+  "15:30 UTC\n16:45 PST\nno stamps\n",       # multi-line
+  "2026-04-03T12:00:00Z\n2026-02-30T12:00:00Z", # multi-line, no trailing newline
+  "15:30 UTC\r\n",                           # CRLF
+  "  15:30 UTC  \n",                         # surrounding whitespace
+  "15:30 UTC \xFF\xFE tail\n".b,             # invalid UTF-8 alongside a match
+  "\xFF\xFE\n".b,                            # invalid UTF-8, nothing to match
+].freeze
 
-      ok = rb_code == rs_code && normalize(rb_out, args) == normalize(rs_out, args)
-      next if ok
+PAYLOAD_ARGS = [
+  [],
+  ["-t", "pst"],
+  ["-t", "pst", "-j"],
+  ["-t", "pst", "-J"],
+  ["--detect"],
+  ["-v", "-t", "pst"],
+].freeze
 
-      fails += 1
-      puts "MISMATCH  TZ=#{tz}  args=#{args.inspect}  input=#{input.inspect}"
-      puts "  ruby (exit #{rb_code}): #{rb_out.inspect}"
-      puts "  rust (exit #{rs_code}): #{rs_out.inspect}"
+["UTC", "America/Los_Angeles"].each do |tz|
+  PAYLOAD_ARGS.each do |args|
+    PAYLOADS.each { |stdin| add(group: "payloads", args: args, stdin: stdin, tz: tz) }
+  end
+end
+
+# ==============================================================================
+# GROUP: env -- the TZ environment variable itself
+# ==============================================================================
+
+ENV_VALUES = [
+  :unset,
+  "",                     # POSIX: empty TZ means UTC, not "a zone named ''"
+  ":America/New_York",    # POSIX leading colon
+  "Not/AZone",            # invalid
+  "Asia/Kolkata",         # sub-hour offset (+05:30)
+  "Asia/Kathmandu",       # sub-hour, non-half-hour offset (+05:45)
+  "PST8PDT",              # POSIX-style zone name
+  "Etc/GMT+7",
+].freeze
+
+ENV_ARGS = [
+  [],
+  ["-t", "utc"],
+  ["-t", "sf", "-j"],
+  ["--detect"],
+  ["-v"],
+  ["-F", "short"],
+].freeze
+
+ENV_LINES = [
+  "2026-04-03T12:00:00Z",
+  "2026-04-03 12:00:00 UTC",
+  "12:34",
+  "15:30 UTC",
+  "11:30:00 PM",
+  "no timestamps here",
+].freeze
+
+ENV_VALUES.each do |tz|
+  ENV_ARGS.each do |args|
+    ENV_LINES.each { |line| add(group: "env", args: args, stdin: "#{line}\n", tz: tz) }
+  end
+end
+
+# ==============================================================================
+# GROUP: aliases -- every alias as a -t target and as a -f source
+# ==============================================================================
+
+Tztr::TIMEZONE_ALIASES.each_key do |name|
+  add(group: "aliases", args: ["-t", name], stdin: "2026-04-03T12:00:00Z\n")
+  add(group: "aliases", args: ["-f", name, "-t", "utc"], stdin: "12:34\n")
+end
+
+# ==============================================================================
+# GROUP: errors -- stderr and exit codes must match byte-for-byte
+# ==============================================================================
+
+ERROR_ARGS = [
+  # unknown / malformed option
+  ["-z"],
+  ["--bogus"],
+  ["--tox", "utc"],
+  ["--f", "utc"],                   # ambiguous abbreviation of --from/--format
+  # missing flag argument
+  ["-t"],
+  ["--to"],
+  ["-f"],
+  ["-F"],
+  ["-d"],
+  # bad -F value
+  ["-F", "bogus", "-t", "utc"],
+  ["-F", "ISO", "-t", "utc"],       # wrong case
+  ["--format=nope"],
+  ["-F", ""],
+  # bad -d value
+  ["-d", "not-a-date", "-t", "utc"],
+  ["-d", "2026-1-5", "-t", "utc"],  # single-digit month/day
+  ["-d", "2026-13-01", "-t", "utc"],
+  ["-d", "2026-02-30", "-t", "utc"],
+  ["-d", "", "-t", "utc"],
+  ["-d", "Jan 15 2026", "-t", "utc"],
+  ["-d", "15 January 2026", "-t", "utc"],
+  ["-d", "20260115", "-t", "utc"],
+  ["-d", "2026/01/15", "-t", "utc"],
+  # unknown timezone
+  ["-t", "Mars/Phobos"],
+  ["-t", "xyz"],
+  ["-t", ""],
+  ["-f", "nope", "-t", "utc"],
+  ["-t", "America/Los Angeles"],
+  ["-t", "../etc/passwd"],
+  # numeric offsets: boundaries, out of range, sub-hour
+  ["-t", "0"],
+  ["-t", "+0"],
+  ["-t", "-0"],
+  ["-t", "14"],
+  ["-t", "-12"],
+  ["-t", "15"],
+  ["-t", "-13"],
+  ["-t", "+99"],
+  ["-t", "5.5"],
+  ["-t", "+5:30"],
+  ["-t", "-3.5"],
+].freeze
+
+ERROR_ARGS.each { |args| add(group: "errors", args: args, stdin: "15:30 UTC\n") }
+
+# ==============================================================================
+# GROUP: modes -- whole modes the matrix used to skip entirely
+# ==============================================================================
+
+[
+  ["-l"], ["--list"], ["-l", "-j"], ["-l", "-t", "nope"],
+  ["-h"], ["--help"], ["--help", "--json"], ["-h", "--ndjson"],
+  ["-V"], ["--version"], ["-V", "-j"],
+  ["--"], ["-t", "utc", "--"],
+].each { |args| add(group: "modes", args: args, stdin: "15:30 UTC\n") }
+
+# ==============================================================================
+# GROUP: files -- file arguments, and -i compared by resulting file bytes
+# ==============================================================================
+
+LOG_A = "2026-04-03T12:00:00Z start\n15:30 UTC tick\nno stamps\n"
+LOG_B = "2026-04-03 12:00:00 PST build\n11:30:00 PM deploy\n"
+
+[
+  [["a.log"],                      { "a.log" => LOG_A }],
+  [["-t", "sf", "a.log"],          { "a.log" => LOG_A }],
+  [["-t", "sf", "a.log", "b.log"], { "a.log" => LOG_A, "b.log" => LOG_B }],
+  [["-t", "sf", "-j", "a.log", "b.log"], { "a.log" => LOG_A, "b.log" => LOG_B }],
+  [["-t", "sf", "empty.log"],      { "empty.log" => "" }],
+  [["-t", "sf", "missing.log"],    {}],
+  [["-t", "sf", "a.log", "missing.log"], { "a.log" => LOG_A }],
+  [["-t", "sf", "--", "a.log"],    { "a.log" => LOG_A }],
+  [["-v", "-t", "sf", "a.log"],    { "a.log" => LOG_A }],
+].each { |args, files| add(group: "files", args: args, files: files) }
+
+# a directory where a file is expected
+add(group: "files", args: ["-t", "sf", "adir"], dirs: ["adir"])
+add(group: "files", args: ["-i", "-t", "sf", "adir"], dirs: ["adir"])
+
+# -i: the interesting output is the file afterwards, which the runner diffs.
+[
+  ["-i", "-t", "sf", "a.log"],
+  ["-i", "-t", "sf", "a.log", "b.log"],
+  ["-i", "-t", "sf", "-F", "iso", "a.log"],
+  ["--in-place", "--to", "sf", "a.log"],
+  ["-i", "-t", "sf", "empty.log"],
+  ["-i", "-t", "sf", "missing.log"],
+  ["-i", "-t", "sf"],               # -i with no file argument
+  ["-i", "-j", "a.log"],            # mutually exclusive
+  ["-i", "--ndjson", "a.log"],
+  ["-i", "--detect", "a.log"],
+  ["-i", "-v", "-t", "sf", "a.log"],
+].each do |args|
+  add(group: "files", args: args,
+      files: { "a.log" => LOG_A, "b.log" => LOG_B, "empty.log" => "" })
+end
+
+# ==============================================================================
+# GROUP: argv -- argument-vector shapes: repeats, ordering, case, terminators
+# ==============================================================================
+
+[
+  # repeated flags -- last one wins, or does it
+  ["-t", "utc", "-t", "sf"],
+  ["-f", "utc", "-f", "pst", "-t", "utc"],
+  ["-F", "short", "-F", "time", "-t", "utc"],
+  ["-d", "2026-01-15", "-d", "2026-07-15", "-t", "utc"],
+  ["-v", "-v", "-t", "utc"],
+  # both structured modes at once
+  ["-j", "-J", "-t", "pst"],
+  ["-J", "-j", "-t", "pst"],
+  ["-t", "utc", "--detect", "-j", "-F", "iso"],
+  # alias casing and the space -> underscore fold
+  ["-t", "SF"],
+  ["-t", "Pst"],
+  ["-t", "hong kong"],
+  ["-t", "Hong Kong"],
+  # unique-prefix abbreviations: OptionParser accepts them for both long
+  # options and -F's value list, so a script can depend on one binary's answer
+  ["--fr", "utc"],
+  ["--fro", "utc"],
+  ["--jso"],
+  ["--nd"],
+  ["--det"],
+  ["--verb", "-t", "utc"],
+  ["-F", "i", "-t", "utc"],
+  ["-F", "s", "-t", "utc"],
+  ["-F", "t", "-t", "utc"],
+  ["-F", "is", "-t", "utc"],
+  ["--format=sh", "--to=utc"],
+  # terminators and dash-shaped operands
+  ["--", "-t"],            # a file literally named "-t"
+  ["-t", "utc", "--", "--detect"],
+  ["-"],                   # a file literally named "-"
+].each { |args| add(group: "argv", args: args, stdin: "15:30 UTC\n") }
+
+# Options after a file operand: OptionParser permutes argv by default.
+[
+  ["a.log", "-t", "sf"],
+  ["-t", "sf", "a.log", "-F", "iso"],
+  ["a.log", "adir"],
+  ["-t", "sf", "adir", "a.log"],
+  # a bad operand after a good one: does the good one's output/rewrite survive?
+  ["-i", "-t", "sf", "a.log", "missing.log"],
+  ["-i", "-t", "sf", "missing.log", "a.log"],
+].each do |args|
+  add(group: "argv", args: args, files: { "a.log" => LOG_A }, dirs: ["adir"])
+end
+
+# -i compared by resulting bytes, on files that stress the rewrite itself.
+{
+  "nonl.log"    => "15:30 UTC tick",                   # no trailing newline
+  "nostamp.log" => "nothing to translate here\n",      # unchanged -> must not be rewritten
+  "binary.log"  => "15:30 UTC \xFF\xFE tail\n".b,      # invalid UTF-8 must survive the round trip
+  "crlf.log"    => "15:30 UTC tick\r\n",
+}.each do |name, body|
+  add(group: "argv", args: ["-i", "-t", "sf", name], files: { name => body })
+  add(group: "argv", args: ["-t", "sf", name], files: { name => body })
+end
+
+# ==============================================================================
+# GROUP: golden -- absolute expectations, checked against BOTH binaries.
+# Reserved for behaviors where agreement isn't enough: both could be wrong the
+# same way. Keep this list short; per-implementation detail belongs in specs.
+# ==============================================================================
+
+# An expectation returns nil when satisfied, or a sentence saying what it wanted.
+
+add(group: "golden", args: ["-v", "-t", "utc"], stdin: "12:34\n", tz: "America/New_York",
+    expect: lambda { |out, err, code|
+      # implicit -f is announced by the disclosure, not by a second startup line
+      next if code.zero? && !out.empty? && err.lines.size == 2
+
+      "expected exit 0 and exactly 2 stderr lines, got exit #{code} / #{err.lines.size} lines"
+    })
+
+add(group: "golden", args: ["-d", "2026-1-5", "-t", "utc"], stdin: "15:30 UTC\n",
+    expect: lambda { |_out, err, code|
+      next if code == 1 && err == "tztr: invalid date: 2026-1-5\n"
+
+      "expected exit 1 and 'tztr: invalid date: 2026-1-5', got exit #{code} / #{err.inspect}"
+    })
+
+add(group: "golden", args: ["-t", "pst", "-j"], stdin: "15:30 UTC \xFF\xFE tail\n".b,
+    expect: lambda { |out, _err, code|
+      # matched substrings are ASCII by construction, so stray bytes elsewhere
+      # in the line must not suppress the match
+      parsed = begin
+        JSON.parse(out)
+      rescue JSON::ParserError
+        nil
+      end
+      next if code.zero? && parsed&.size == 1
+
+      "expected exit 0 and 1 JSON match, got exit #{code} / #{out.inspect}"
+    })
+
+add(group: "golden", args: ["-t", "sf", "missing.log"], files: {},
+    expect: lambda { |_out, err, code|
+      next if code == 1 && err == "tztr: missing.log: No such file or directory (os error 2)\n"
+
+      "expected exit 1 and a message naming missing.log, got exit #{code} / #{err.inspect}"
+    })
+
+# ==============================================================================
+# Runner
+# ==============================================================================
+
+def prepare(dir, kase)
+  FileUtils.mkdir_p(dir)
+  kase[:files]&.each { |name, body| File.binwrite(File.join(dir, name), body) }
+  kase[:dirs]&.each { |name| FileUtils.mkdir_p(File.join(dir, name)) }
+end
+
+# Every file the run left behind, so `-i` is compared by result rather than by
+# its (empty) stdout.
+def snapshot(dir)
+  Dir.glob("**/*", base: dir).sort.map do |rel|
+    path = File.join(dir, rel)
+    [rel, File.file?(path) ? File.binread(path) : :dir]
+  end
+end
+
+def run(cmd, kase, dir)
+  out, err, status = Open3.capture3(
+    { "TZ" => (kase[:tz] == :unset ? nil : kase[:tz]) },
+    *cmd, *kase[:args],
+    stdin_data: kase[:stdin], chdir: dir
+  )
+  [out.b, err.b, status.exitstatus, dir == ROOT ? nil : snapshot(dir)]
+end
+
+def check(kase, index, scratch)
+  sandboxed = kase[:files] || kase[:dirs]
+  rb_dir = sandboxed ? File.join(scratch, "#{index}-rb") : ROOT
+  rs_dir = sandboxed ? File.join(scratch, "#{index}-rs") : ROOT
+
+  if sandboxed
+    prepare(rb_dir, kase)
+    prepare(rs_dir, kase)
+  end
+
+  rb = run(RUBY_CMD, kase, rb_dir)
+  rs = run(RUST_CMD, kase, rs_dir)
+
+  problems = []
+  problems << "stdout" unless rb[0] == rs[0]
+  problems << "stderr" unless rb[1] == rs[1]
+  problems << "exit"   unless rb[2] == rs[2]
+  problems << "files"  unless rb[3] == rs[3]
+
+  if (expect = kase[:expect])
+    { "ruby" => rb, "rust" => rs }.each do |name, (out, err, code, _)|
+      result = expect.call(out, err, code)
+      problems << "#{name} expectation: #{result}" if result.is_a?(String)
     end
   end
+
+  problems.empty? ? nil : { kase: kase, problems: problems, rb: rb, rs: rs }
 end
 
+def describe(kase)
+  parts = ["TZ=#{kase[:tz] == :unset ? '<unset>' : kase[:tz].inspect}",
+           "args=#{kase[:args].inspect}"]
+  parts << "stdin=#{kase[:stdin].inspect}" unless kase[:stdin].empty?
+  parts << "files=#{kase[:files].keys.inspect}" if kase[:files]&.any?
+  parts << "dirs=#{kase[:dirs].inspect}" if kase[:dirs]
+  parts.join("  ")
+end
+
+def report(failure)
+  kase = failure[:kase]
+  puts "MISMATCH [#{kase[:group]}] #{failure[:problems].join(', ')}"
+  puts "  #{describe(kase)}"
+  %w[ruby rust].zip([failure[:rb], failure[:rs]]).each do |name, (out, err, code, files)|
+    puts "  #{name} exit=#{code} out=#{out.inspect} err=#{err.inspect}"
+    puts "  #{name} files=#{files.inspect}" if files
+  end
+  puts
+end
+
+groups = ENV["PARITY_GROUPS"]&.split(",")&.map(&:strip)
+cases = groups ? CASES.select { |c| groups.include?(c[:group]) } : CASES
+abort "no cases match PARITY_GROUPS=#{ENV['PARITY_GROUPS']}" if cases.empty?
+
+# Ruby process startup dominates the runtime, and it is all waiting on IO, so a
+# small pool cuts wall time several-fold. Results stay indexed, so the report
+# order is identical to a serial run.
+jobs = Integer(ENV["PARITY_JOBS"] || Etc.nprocessors)
+failures = Array.new(cases.size)
+started = Time.now
+
+Dir.mktmpdir("tztr-parity") do |scratch|
+  queue = (0...cases.size).to_a
+  lock = Mutex.new
+  [jobs, cases.size].min.times.map do
+    Thread.new do
+      loop do
+        i = lock.synchronize { queue.shift }
+        break if i.nil?
+
+        failures[i] = check(cases[i], i, scratch)
+      end
+    end
+  end.each(&:join)
+end
+
+failures.compact!
+failures.each { |f| report(f) }
+
+by_group = cases.group_by { |c| c[:group] }.transform_values(&:size)
+failed_by_group = failures.group_by { |f| f[:kase][:group] }.transform_values(&:size)
+
+puts "cases by group:"
+by_group.each { |group, n| puts format("  %-10s %5d  (%d failing)", group, n, failed_by_group.fetch(group, 0)) }
 puts
-puts "#{total - fails}/#{total} cases match"
-exit(fails.zero? ? 0 : 1)
+puts "#{cases.size - failures.size}/#{cases.size} cases match  [#{jobs} jobs, #{format('%.1fs', Time.now - started)}]"
+exit(failures.empty? ? 0 : 1)
