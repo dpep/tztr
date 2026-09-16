@@ -550,6 +550,16 @@ RSpec.describe Tztr do
       expect(err).to match(/^tztr: no -d given, assuming \d{4}-\d{2}-\d{2} for DST resolution$/)
     end
 
+    it "discloses the date assumption for a zoned but dateless timestamp" do
+      _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "nyc", "-v", stdin_data: "15:30 UTC\n")
+      expect(err).to match(/^tztr: no -d given, assuming \d{4}-\d{2}-\d{2} for DST resolution$/)
+    end
+
+    it "says nothing about a date the timestamp already carries" do
+      _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "nyc", "-v", stdin_data: "2026-04-03T12:00:00Z\n")
+      expect(err).not_to include("assuming")
+    end
+
     it "says nothing about assumptions it did not make" do
       _, err, = Open3.capture3(
         { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", "-f", "utc", "-d", "2026-01-15",

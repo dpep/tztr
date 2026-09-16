@@ -147,13 +147,14 @@ end
 
 # A bare time silently borrows its source zone from $TZ and resolves DST
 # against today. Say so, once, the first time it actually happens.
-disclosed = false
+disclosed = []
 disclose = lambda do |line|
-  return if disclosed || !Tztr.bare_timestamp?(line)
+  assumed = Tztr.assumptions(line) - disclosed
+  return if assumed.empty?
 
-  disclosed = true
-  warn "#{parser.program_name}: from=#{options[:from]} (implicit, from $TZ) to=#{options[:to]}" if implicit_from
-  warn "#{parser.program_name}: no -d given, assuming #{Date.today.strftime('%Y-%m-%d')} for DST resolution" unless options[:date]
+  disclosed.concat(assumed)
+  warn "#{parser.program_name}: from=#{options[:from]} (implicit, from $TZ) to=#{options[:to]}" if assumed.include?(:zone) && implicit_from
+  warn "#{parser.program_name}: no -d given, assuming #{Date.today.strftime('%Y-%m-%d')} for DST resolution" if assumed.include?(:date) && !options[:date]
 end
 
 # An error about one of our inputs names it. A broken pipe is about stdout and

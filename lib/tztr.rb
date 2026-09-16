@@ -207,14 +207,20 @@ module Tztr
     results
   end
 
-  # A timestamp carrying neither a date nor a zone. Both its source zone and
-  # its DST offset are then assumptions, which -v discloses.
-  def bare_timestamp?(line)
+  # Which assumptions a line's timestamps force on us, for -v to disclose.
+  # A timestamp with no date needs one to resolve DST in the *target* zone,
+  # whether or not it names its own; without a zone as well, the source zone
+  # comes from $TZ too.
+  def assumptions(line)
     line = scannable(line)
     pattern = PATTERNS.find { |p| line.match?(p) }
-    return false unless pattern
+    return [] unless pattern
 
-    line.scan(pattern).any? { |match| detect_format(match) == 'time' && detect_zone(match).nil? }
+    dateless = line.scan(pattern).select { |match| detect_format(match) == 'time' }
+    return [] if dateless.empty?
+    return %i[date zone] if dateless.any? { |match| detect_zone(match).nil? }
+
+    [:date]
   end
 
   def convert_match(match, from:, to:, format:, date: nil)
