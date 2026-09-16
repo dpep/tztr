@@ -8,6 +8,12 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_tztr")
 }
 
+/// A scratch file named for this process, so concurrent test runs (the parity
+/// harness builds and runs alongside) cannot collide on it.
+fn temp_path(stem: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("{stem}-{}.log", std::process::id()))
+}
+
 struct Output {
     stdout: Vec<u8>,
     stderr: String,
@@ -34,7 +40,18 @@ fn run_tz(input: &[u8], args: &[&str], tz: Option<&str>) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
+    // A run that fails on its arguments exits before reading stdin, so this
+    // write races with the child and loses the pipe. That is the case under
+    // test, not a failure of it.
+    let mut stdin = child.stdin.take().unwrap();
+    if let Err(e) = stdin.write_all(input) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "writing stdin: {e}"
+        );
+    }
+    drop(stdin);
     let out = child.wait_with_output().unwrap();
     Output {
         stdout: out.stdout,
@@ -456,7 +473,7 @@ fn a_broken_pipe_is_not_blamed_on_the_input_file() {
     // `tztr big.log | head -1` is the commonest way this tool gets stopped.
     // EPIPE comes from writing to stdout — the input file was fine, and naming
     // it sends the user to look in the wrong place.
-    let path = std::env::temp_dir().join("tztr-epipe.log");
+    let path = temp_path("tztr-epipe");
     let body = "2026-04-03T12:00:00Z\n".repeat(50_000);
     std::fs::write(&path, body).unwrap();
 
@@ -563,7 +580,7 @@ fn an_invalid_line_does_not_stop_the_valid_ones() {
 fn in_place_edit_keeps_bytes_it_cannot_decode() {
     // `-i` used to abort on the whole file ("stream did not contain valid
     // UTF-8") and leave it untranslated.
-    let path = std::env::temp_dir().join("tztr-inplace-bytes.log");
+    let path = temp_path("tztr-inplace-bytes");
     std::fs::write(&path, b"2026-04-03T12:00:00Z \xff\xfe junk\n").unwrap();
     let o = run_tz(
         b"",
