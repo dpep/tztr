@@ -576,6 +576,17 @@ RSpec.describe Tztr do
       expect(run_fail("/tmp")).to eq("tztr: /tmp: Is a directory (os error 21)")
     end
 
+    it "emits earlier files before a later one fails" do
+      good = "/tmp/tztr-lazy-good.txt"
+      File.write(good, "2026-04-03T12:00:00Z\n")
+      out, err, status = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "pst", good, "/tmp/tztr-nope.txt")
+      expect(status).not_to be_success
+      expect(out).to eq("2026-04-03T05:00:00-07:00\n")
+      expect(err.chomp).to eq("tztr: /tmp/tztr-nope.txt: No such file or directory (os error 2)")
+    ensure
+      File.delete(good) if File.exist?(good)
+    end
+
     it "names the file in an -i error too" do
       expect(run_fail("-i", "/tmp/tztr-does-not-exist.txt"))
         .to eq("tztr: /tmp/tztr-does-not-exist.txt: No such file or directory (os error 2)")

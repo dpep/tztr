@@ -145,12 +145,6 @@ file_error = lambda do |path, error|
   abort "#{parser.program_name}: #{path}: #{SystemCallError.new(error.errno).message} (os error #{error.errno})"
 end
 
-open_input = lambda do |path|
-  File.open(path)
-rescue SystemCallError => e
-  file_error.call(path, e)
-end
-
 $stdout.sync = true
 
 if ARGV.empty? && $stdin.tty?
@@ -175,9 +169,12 @@ begin
   else
     collected = [] if options[:json]
 
-    # Paired with its path so a read error can name it; stdin has none.
-    inputs = ARGV.empty? ? [[$stdin, nil]] : ARGV.map { |path| [open_input.call(path), path] }
-    inputs.each do |input, path|
+    # Opened one at a time: a filter should start emitting as soon as it has
+    # something, rather than stat-ing every argument first. nil is stdin.
+    paths = ARGV.empty? ? [nil] : ARGV
+    paths.each do |path|
+      input = path ? File.open(path) : $stdin
+
       input.each_line do |line|
         disclose.call(line) if options[:verbose]
 
