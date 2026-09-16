@@ -406,23 +406,41 @@ fn rejects_dates_outside_that_set_and_dates_that_do_not_exist() {
 // --- B9: one clean error line, whichever path hit it ------------------------
 
 #[test]
-fn file_errors_read_the_same_streaming_or_in_place() {
+fn an_error_about_a_file_names_the_file() {
+    // With several file arguments the bare message says nothing about which
+    // one failed, so both code paths name it.
     let missing = "/nonexistent/tztr-does-not-exist.log";
     assert_eq!(
         fails("", &["-t", "utc", missing]),
-        "tztr: No such file or directory (os error 2)"
+        format!("tztr: {missing}: No such file or directory (os error 2)")
     );
     assert_eq!(
         fails("", &["-i", "-t", "utc", missing]),
-        "tztr: No such file or directory (os error 2)"
+        format!("tztr: {missing}: No such file or directory (os error 2)")
     );
     assert_eq!(
         fails("", &["-t", "utc", "/tmp"]),
-        "tztr: Is a directory (os error 21)"
+        "tztr: /tmp: Is a directory (os error 21)"
     );
+    assert_eq!(
+        fails("", &["-i", "-t", "utc", "/tmp"]),
+        "tztr: /tmp: Is a directory (os error 21)"
+    );
+}
+
+#[test]
+fn errors_not_about_a_file_stay_bare() {
     assert_eq!(
         fails("2026-04-03T12:00:00Z\n", &["--bogus"]),
         "tztr: invalid option: --bogus"
+    );
+    assert_eq!(
+        fails("2026-04-03T12:00:00Z\n", &["-t", "Bogus/Zone"]),
+        "tztr: unknown timezone: Bogus/Zone"
+    );
+    assert_eq!(
+        fails("15:30\n", &["-d", "not-a-date"]),
+        "tztr: invalid date: not-a-date"
     );
 }
 

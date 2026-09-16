@@ -238,8 +238,8 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
         return Err("-i requires a file argument".to_string());
     }
     for file in &opts.files {
-        // Same wording as the streaming path — one error shape to match.
-        let content = fs::read(file).map_err(|e| e.to_string())?;
+        let named = |e: io::Error| format!("{file}: {e}");
+        let content = fs::read(file).map_err(named)?;
         let mut translated: Vec<u8> = Vec::with_capacity(content.len());
         for line in content.split_inclusive(|b| *b == b'\n') {
             translated.extend_from_slice(&translate_bytes(
@@ -251,7 +251,7 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
             ));
         }
         if translated != content {
-            fs::write(file, translated).map_err(|e| e.to_string())?;
+            fs::write(file, translated).map_err(named)?;
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -274,18 +274,23 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
         disclosed: false,
     };
 
-    let result = (|| -> io::Result<()> {
+    (|| -> Result<(), String> {
         if opts.files.is_empty() {
             let stdin = io::stdin();
             for_each_line(stdin.lock(), |line| {
                 handle_line(opts, json_mode, line, &mut sink)
-            })?;
+            })
+            .map_err(|e| e.to_string())?;
         } else {
             for file in &opts.files {
-                let f = fs::File::open(file)?;
+                // An error about a file names it — with several arguments the
+                // bare message does not say which one failed.
+                let named = |e: io::Error| format!("{file}: {e}");
+                let f = fs::File::open(file).map_err(named)?;
                 for_each_line(BufReader::new(f), |line| {
                     handle_line(opts, json_mode, line, &mut sink)
-                })?;
+                })
+                .map_err(named)?;
             }
         }
         if opts.json {
@@ -295,12 +300,12 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
                     .map(|m| json_value(m, opts.detect))
                     .collect(),
             );
-            writeln!(sink.out, "{}", serde_json::to_string_pretty(&arr).unwrap())?;
+            writeln!(sink.out, "{}", serde_json::to_string_pretty(&arr).unwrap())
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
-    })();
+    })()?;
 
-    result.map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }
 

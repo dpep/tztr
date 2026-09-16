@@ -70,14 +70,18 @@ Note that the parity harness compares **stdout and exit status only**
 by the gate and have to be kept in step by hand.
 ## Error strings
 
-One line, no backtrace, exit 1, byte-identical with Ruby. The `-i` path uses the
-same wording as the streaming path — no filename prefix:
+One line, no backtrace, exit 1, byte-identical with Ruby. An error **about a
+particular file names it**, in both the streaming and the `-i` path — with
+several file arguments the bare message does not say which one failed:
+
+    tztr: app.log: No such file or directory (os error 2)
+    tztr: app.log: Is a directory (os error 21)
+
+Everything else stays bare:
 
     tztr: unknown timezone: Bogus/Zone
     tztr: offset out of range: 15 (expected -12..14)
     tztr: invalid date: 2026-02-30
-    tztr: No such file or directory (os error 2)
-    tztr: Is a directory (os error 21)
     tztr: invalid option: --bogus
 
 ## Known defect, deferred
