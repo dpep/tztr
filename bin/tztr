@@ -45,6 +45,7 @@ HELP_DOC = {
 }.freeze
 
 local_tz = ENV['TZ']
+local_tz = nil if local_tz&.empty? # TZ="" means unset, not "a zone named ''"
 
 options = {
   from: nil,

@@ -383,6 +383,15 @@ RSpec.describe Tztr do
         .to eq("2026-04-03T08:00:00-04:00")
     end
 
+    it "treats an empty TZ as unset" do
+      expect(run("2026-04-03T12:00:00Z", env: { "TZ" => "" })).to eq("2026-04-03T12:00:00Z")
+    end
+
+    it "honors the POSIX leading colon in TZ" do
+      expect(run("2026-04-03T12:00:00Z", env: { "TZ" => ":America/New_York" }))
+        .to eq("2026-04-03T08:00:00-04:00")
+    end
+
     it "overrides TZ env with -t flag" do
       expect(run("2026-04-03T12:00:00Z", "-t", "America/Los_Angeles", env: { "TZ" => "America/New_York" }))
         .to eq("2026-04-03T05:00:00-07:00")
