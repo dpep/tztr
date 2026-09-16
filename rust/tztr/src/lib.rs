@@ -8,9 +8,10 @@
 //! Timezone math uses `jiff`, which reads the system tz database — the same
 //! source Ruby's `Time` uses via `ENV['TZ']` — so DST behavior matches.
 
-use jiff::civil::DateTime;
+use jiff::civil::{Date, DateTime};
 use jiff::tz::{Offset, TimeZone};
-use jiff::Zoned;
+use jiff::{Span, Zoned};
+use regex::bytes::Regex as BytesRegex;
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -32,54 +33,154 @@ pub struct Match {
     pub translated: Option<String>,
 }
 
+/// Timezone abbreviations `tztr` recognizes inside text.
+///
+/// The union of the abbreviations Ruby's `Time.parse` resolves natively
+/// (`UT UTC GMT` plus E/C/M/P × ST/DT) and the abbreviation-shaped keys of
+/// [`timezone_aliases`]. Deliberately an allowlist: the `[A-Z]{2,4}` wildcard
+/// this replaces ate log levels (`INFO`, `WARN`, `ERROR`) and meridiems (`PM`)
+/// straight out of the line.
+///
+/// City nicknames (`sf`, `nyc`, …) are *not* here — they are `-t`/`-f` values,
+/// not things to look for inside text.
+pub const ZONE_ABBREVIATIONS: &[&str] = &[
+    "AEDT", "AEST", "AKDT", "AKST", "BST", "CDT", "CEST", "CET", "CST", "CT", "EDT", "EST", "ET",
+    "GMT", "HKT", "HST", "IST", "JST", "KST", "MDT", "MST", "MT", "NZDT", "NZST", "PDT", "PST",
+    "PT", "UT", "UTC", "Z",
+];
+
+/// [`ZONE_ABBREVIATIONS`] as a regex alternation, longest token first — the
+/// regex crate's alternation is leftmost-*first*, so `UT` ahead of `UTC` would
+/// clip the trailing `C` off and orphan it in the output.
+fn zone_alternation() -> &'static str {
+    static ALT: OnceLock<String> = OnceLock::new();
+    ALT.get_or_init(|| {
+        let mut tokens = ZONE_ABBREVIATIONS.to_vec();
+        tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
+        tokens.join("|")
+    })
+}
+
+/// The zone an abbreviation names, for the ones that are not a fixed offset
+/// Ruby's `Time.parse` already knows (`CET`, `JST`, `AEST`, …).
+fn abbrev_zone(token: &str) -> Option<TimeZone> {
+    let key = token.to_lowercase();
+    let name = timezone_aliases()
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| *v)?;
+    TimeZone::get(name).ok()
+}
+
+/// Every pattern is pure ASCII, so every substring one matches is too.
+fn ascii(bytes: &[u8]) -> &str {
+    std::str::from_utf8(bytes).expect("the patterns match ASCII only")
+}
+
 /// Timestamp patterns, ordered and first-match-wins per line (see CLAUDE.md).
 /// More specific patterns (with timezone) come before less specific ones.
-fn patterns() -> &'static [Regex] {
-    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+///
+/// Byte-oriented so a line with a stray non-UTF-8 byte in it can still have its
+/// timestamps converted without those bytes being rewritten. Unicode mode stays
+/// on: `\b` has to agree with Ruby's, which is Unicode-aware.
+fn patterns() -> &'static [BytesRegex] {
+    static PATTERNS: OnceLock<Vec<BytesRegex>> = OnceLock::new();
     PATTERNS
         .get_or_init(|| {
+            let zone = zone_alternation();
+            // A trailing zone token: an allowlisted abbreviation or +HHMM.
+            let tz = format!("(?:{zone}|[+-]\\d{{4}})");
+            // Seconds and fractional seconds, both optional.
+            let secs = r"(?::\d{2}(?:\.\d+)?)?";
+            // A meridiem, optionally followed by a zone ("3:45 PM PST").
+            let mer = format!(r" ?[AaPp]\.?[Mm]\.?(?: ?{tz})?");
             [
                 // ISO 8601 with Z or offset
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})",
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})".to_string(),
                 // ISO 8601 without timezone
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?",
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
+                // Date space 12-hour time
+                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)?{mer}\b"),
                 // Date space time with tz
-                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})",
+                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)? ?{tz}\b"),
                 // Date space time
-                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?",
+                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
+                // 12-hour time
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs}{mer}\b"),
                 // Time with tz
-                r"\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?(?:UTC|GMT|[A-Z]{2,4}|[+-]\d{4})\b",
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs} ?{tz}\b"),
                 // Time with offset
-                r"\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2}:?\d{2}\b",
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs}[+-]\d{{2}}:?\d{{2}}\b"),
                 // Bare time
-                r"\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b",
+                format!(r"\b\d{{1,2}}:\d{{2}}{secs}\b"),
             ]
             .iter()
-            .map(|p| Regex::new(p).expect("valid pattern"))
+            .map(|p| BytesRegex::new(p).expect("valid pattern"))
             .collect()
         })
         .as_slice()
 }
 
-/// Resolve a user-supplied zone (alias, numeric offset, or IANA name) to an
-/// IANA-style name string. Mirrors `Tztr.resolve_tz`.
-pub fn resolve_tz(input: &str) -> String {
-    // Numeric offset: -7 -> Etc/GMT+7 (POSIX sign is inverted)
-    if numeric_offset_re().is_match(input) {
-        let n: i32 = input.parse().unwrap_or(0);
-        if n == 0 {
-            return "UTC".to_string();
+/// Why a user-supplied timezone could not be resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TzError {
+    /// Not an alias, not a numeric offset, and not a name the system tz
+    /// database knows.
+    Unknown(String),
+    /// A whole-hour numeric offset outside the range real zones occupy.
+    OffsetOutOfRange(String),
+}
+
+impl std::fmt::Display for TzError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown(s) => write!(f, "unknown timezone: {s}"),
+            Self::OffsetOutOfRange(s) => {
+                write!(f, "offset out of range: {s} (expected -12..14)")
+            }
         }
+    }
+}
+
+impl std::error::Error for TzError {}
+
+/// Resolve a user-supplied zone (alias, numeric offset, or IANA name) to an
+/// IANA-style name the system tz database can load. Mirrors `Tztr.resolve_tz`.
+///
+/// This is the validating boundary: everything downstream may assume the name
+/// it returns names a real zone. A zone that cannot be resolved is an error,
+/// never a silent fall back to UTC — the old fallback answered every
+/// conversion in the wrong zone, confidently.
+pub fn resolve_tz(input: &str) -> Result<String, TzError> {
+    // POSIX spells TZ with a leading colon (`TZ=:America/New_York`).
+    let input = input.strip_prefix(':').unwrap_or(input);
+
+    if numeric_offset_re().is_match(input) {
+        let n: i32 = input.parse().map_err(|_| unknown(input))?;
+        if n == 0 {
+            return Ok("UTC".to_string());
+        }
+        if !(-12..=14).contains(&n) {
+            return Err(TzError::OffsetOutOfRange(input.to_string()));
+        }
+        // Numeric offset: -7 -> Etc/GMT+7 (POSIX sign is inverted)
         let sign = if n > 0 { '-' } else { '+' };
-        return format!("Etc/GMT{}{}", sign, n.abs());
+        return Ok(format!("Etc/GMT{}{}", sign, n.abs()));
     }
 
     let key = input.to_lowercase().replace(' ', "_");
-    timezone_aliases()
+    let name = timezone_aliases()
         .iter()
         .find(|(k, _)| *k == key)
-        .map(|(_, v)| v.to_string())
-        .unwrap_or_else(|| input.to_string())
+        .map_or(input, |(_, v)| *v);
+
+    TimeZone::get(name).map_err(|_| unknown(input))?;
+    Ok(name.to_string())
+}
+
+fn unknown(input: &str) -> TzError {
+    TzError::Unknown(input.to_string())
 }
 
 fn numeric_offset_re() -> &'static Regex {
@@ -95,36 +196,48 @@ pub fn translate(
     to: &str,
     from: Option<&str>,
     format: Option<Format>,
-    local: bool,
     date: Option<&str>,
 ) -> String {
+    let out = translate_bytes(line.as_bytes(), to, from, format, date);
+    String::from_utf8(out).expect("ASCII replacements inside valid UTF-8 stay valid UTF-8")
+}
+
+/// [`translate`] for input that may not be valid UTF-8 — a log line with a
+/// stray byte in it. Timestamps still convert; every other byte, valid or not,
+/// comes out exactly as it went in.
+pub fn translate_bytes(
+    line: &[u8],
+    to: &str,
+    from: Option<&str>,
+    format: Option<Format>,
+    date: Option<&str>,
+) -> Vec<u8> {
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
 
     for pattern in patterns() {
         if pattern.is_match(line) {
             return pattern
-                .replace_all(line, |caps: &regex::Captures| {
-                    let m = &caps[0];
-                    convert_match(m, from_tz.as_ref(), &to_tz, format, local, date)
+                .replace_all(line, |caps: &regex::bytes::Captures| {
+                    let m = ascii(&caps[0]);
+                    convert_match(m, from_tz.as_ref(), &to_tz, format, date)
                         .unwrap_or_else(|| m.to_string())
+                        .into_bytes()
                 })
                 .into_owned();
         }
     }
 
-    line.to_string()
+    line.to_vec()
 }
 
 /// Per-match structured analysis of a line. With `detect`, translation is
 /// skipped and [`Match::translated`] is `None`. Mirrors `Tztr.matches`.
-#[allow(clippy::too_many_arguments)]
 pub fn matches(
     line: &str,
     to: &str,
     from: Option<&str>,
     format: Option<Format>,
-    local: bool,
     detect: bool,
     date: Option<&str>,
 ) -> Vec<Match> {
@@ -133,13 +246,13 @@ pub fn matches(
     let mut results = Vec::new();
 
     for pattern in patterns() {
-        if pattern.is_match(line) {
-            for m in pattern.find_iter(line) {
-                let original = m.as_str();
+        if pattern.is_match(line.as_bytes()) {
+            for m in pattern.find_iter(line.as_bytes()) {
+                let original = ascii(m.as_bytes());
                 let translated = if detect {
                     None
                 } else {
-                    convert_match(original, from_tz.as_ref(), &to_tz, format, local, date)
+                    convert_match(original, from_tz.as_ref(), &to_tz, format, date)
                 };
                 results.push(Match {
                     original: original.to_string(),
@@ -160,11 +273,32 @@ fn convert_match(
     from_tz: Option<&TimeZone>,
     to_tz: &TimeZone,
     format: Option<Format>,
-    local: bool,
     date: Option<&str>,
 ) -> Option<String> {
     let zoned = parse(m, from_tz, to_tz, date)?;
-    Some(format_time(&zoned, format, m, local))
+    Some(format_time(&zoned, format, m))
+}
+
+/// Whether `line` carries a timestamp with neither a zone nor a date — the
+/// case where converting it means assuming both. The CLI asks so that `-v` can
+/// disclose those assumptions instead of answering silently.
+pub fn has_bare_timestamp(line: &str) -> bool {
+    patterns()
+        .iter()
+        .find(|p| p.is_match(line.as_bytes()))
+        .is_some_and(|p| {
+            p.find_iter(line.as_bytes()).any(|m| {
+                let s = ascii(m.as_bytes());
+                detect_format(s) == "time" && detect_zone(s).is_none()
+            })
+        })
+}
+
+/// Today's date in `tz` as `YYYY-MM-DD` — the date a date-less timestamp is
+/// resolved against when no reference date is given.
+pub fn today_in_zone(tz: &str) -> String {
+    let (y, m, d) = today_in(&resolve_zone(tz));
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// Label the detected format. Mirrors `Tztr.detect_format`.
@@ -196,7 +330,10 @@ fn date_space_re() -> &'static Regex {
 
 fn detect_zone_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\s?(Z|[+-]\d{2}:?\d{2}|UTC|GMT|[A-Z]{2,4})$").unwrap())
+    RE.get_or_init(|| {
+        let zone = zone_alternation();
+        Regex::new(&format!(r"\s?({zone}|[+-]\d{{2}}:?\d{{2}})$")).unwrap()
+    })
 }
 
 // --- timestamp parsing -----------------------------------------------------
@@ -204,9 +341,10 @@ fn detect_zone_re() -> &'static Regex {
 fn components_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"^(?:(\d{4})-(\d{2})-(\d{2})[T ])?(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?\s?(Z|[+-]\d{2}:?\d{2}|[+-]\d{4}|[A-Za-z]{2,4})?$",
-        )
+        let zone = zone_alternation();
+        Regex::new(&format!(
+            r"^(?:(?<y>\d{{4}})-(?<mo>\d{{2}})-(?<d>\d{{2}})[T ])?(?<h>\d{{1,2}}):(?<mi>\d{{2}})(?::(?<s>\d{{2}})(?:\.(?<frac>\d+))?)?(?: ?(?<mer>[AaPp])\.?[Mm]\.?)?\s?(?<zone>{zone}|[+-]\d{{2}}:?\d{{2}}|[+-]\d{{4}})?$",
+        ))
         .unwrap()
     })
 }
@@ -238,60 +376,80 @@ fn parse(
     };
 
     let caps = components_re().captures(s)?;
+    let group = |n| caps.name(n).map(|m| m.as_str());
 
-    let hour: i8 = caps[4].parse().ok()?;
-    let minute: i8 = caps[5].parse().ok()?;
-    let second: i8 = caps.get(6).map_or(0, |m| m.as_str().parse().unwrap_or(0));
-    let nanos = caps.get(7).map_or(0, |m| frac_to_nanos(m.as_str()));
-    let zone_token = caps.get(8).map(|m| m.as_str()).unwrap_or("");
+    let hour: i8 = group("h")?.parse().ok()?;
+    let minute: i8 = group("mi")?.parse().ok()?;
+    let second: i8 = group("s").map_or(0, |v| v.parse().unwrap_or(0));
+    let nanos = group("frac").map_or(0, frac_to_nanos);
+    let zone_token = group("zone").unwrap_or("");
+    let hour = apply_meridiem(hour, group("mer"));
 
-    let recognized = zone_offset_seconds(zone_token);
-    let has_token = !zone_token.is_empty();
-
-    // Determine how to anchor the wall-clock time, and which zone supplies
-    // "today" for date-less inputs.
-    enum Mode<'a> {
-        Fixed(i32),
-        InZone(&'a TimeZone),
-    }
-    // For date-less inputs, the missing date is "today" as seen in the zone the
-    // timestamp is expressed in (mirrors Ruby's Time.parse) — i.e. the embedded
-    // zone when present, else the source/output zone. NOT the output zone when
-    // an embedded zone is given, which would be off by a day near a boundary.
-    let (mode, today_tz): (Mode, TimeZone) = if has_token {
-        match recognized {
-            Some(off) => (
-                Mode::Fixed(off),
-                TimeZone::fixed(Offset::from_seconds(off).ok()?),
-            ),
-            None => (Mode::InZone(to_tz), to_tz.clone()), // unknown abbrev -> ignored
+    // The zone the wall-clock time is anchored in — and, for date-less inputs,
+    // the zone whose "today" fills the missing date (mirrors Ruby's
+    // Time.parse). NOT the output zone when a zone is embedded, which would
+    // land a day off near a midnight boundary.
+    let anchor: TimeZone = if !zone_token.is_empty() {
+        match zone_offset_seconds(zone_token) {
+            // UTC/GMT/UT, E/C/M/P × ST/DT and numeric offsets are fixed offsets.
+            Some(off) => TimeZone::fixed(Offset::from_seconds(off).ok()?),
+            // CET, JST, AEST, … carry real DST rules; resolve them as zones.
+            None => abbrev_zone(zone_token)?,
         }
     } else if let Some(f) = from_tz {
-        (Mode::InZone(f), f.clone())
+        f.clone()
     } else {
-        (Mode::InZone(to_tz), to_tz.clone())
+        to_tz.clone()
     };
 
-    let (year, month, day) = match (caps.get(1), caps.get(2), caps.get(3)) {
-        (Some(y), Some(mo), Some(d)) => (
-            y.as_str().parse().ok()?,
-            mo.as_str().parse().ok()?,
-            d.as_str().parse().ok()?,
-        ),
-        _ => today_in(&today_tz),
+    let (year, month, day) = match (group("y"), group("mo"), group("d")) {
+        (Some(y), Some(mo), Some(d)) => (y.parse().ok()?, mo.parse().ok()?, d.parse().ok()?),
+        _ => today_in(&anchor),
     };
 
-    let civil = DateTime::new(year, month, day, hour, minute, second, nanos).ok()?;
-
-    let instant = match mode {
-        Mode::Fixed(off) => {
-            let tz = TimeZone::fixed(Offset::from_seconds(off).ok()?);
-            civil.to_zoned(tz).ok()?
-        }
-        Mode::InZone(tz) => civil.to_zoned(tz.clone()).ok()?,
-    };
+    let civil = civil_datetime(
+        Date::new(year, month, day).ok()?,
+        hour,
+        minute,
+        second,
+        nanos,
+    )?;
+    let instant = civil.to_zoned(anchor).ok()?;
 
     Some(instant.with_time_zone(to_tz.clone()))
+}
+
+/// Place a wall-clock reading on `date`, carrying the two overflows a clock
+/// legitimately produces: `24:00`, the midnight that ends a day, and `:60`, a
+/// leap second. Anything further out of range (`25:00`, `12:60`) is not a time
+/// at all — the caller leaves that text exactly as it found it.
+fn civil_datetime(date: Date, hour: i8, minute: i8, second: i8, nanos: i32) -> Option<DateTime> {
+    let in_range = (0..=59).contains(&minute)
+        && (0..=60).contains(&second)
+        && match hour {
+            0..=23 => true,
+            24 => minute == 0 && second == 0,
+            _ => false,
+        };
+    if !in_range {
+        return None;
+    }
+
+    let span = Span::new()
+        .hours(i64::from(hour))
+        .minutes(i64::from(minute))
+        .seconds(i64::from(second));
+    date.at(0, 0, 0, nanos).checked_add(span).ok()
+}
+
+/// Fold a 12-hour clock reading onto the 24-hour clock. Out-of-range readings
+/// (`15:30 PM`) are left alone — the calendar check downstream decides.
+fn apply_meridiem(hour: i8, meridiem: Option<&str>) -> i8 {
+    match meridiem.map(str::to_ascii_lowercase).as_deref() {
+        Some("p") if hour < 12 => hour + 12,
+        Some("a") if hour == 12 => 0,
+        _ => hour,
+    }
 }
 
 fn today_in(tz: &TimeZone) -> (i16, i8, i8) {
@@ -349,11 +507,14 @@ fn parse_numeric_offset(token: &str) -> Option<i32> {
     Some(sign * (hh * 3600 + mm * 60))
 }
 
-/// Resolve to a `TimeZone`, falling back to UTC for unknown names — matching
-/// Ruby, where an invalid `ENV['TZ']` is treated as UTC.
+/// Resolve to a `TimeZone`. Callers are expected to have validated the name
+/// through [`resolve_tz`] first (the CLI does, and exits on failure); the UTC
+/// fallback here is the last resort for a library caller that did not.
 fn resolve_zone(input: &str) -> TimeZone {
-    let name = resolve_tz(input);
-    TimeZone::get(&name).unwrap_or(TimeZone::UTC)
+    resolve_tz(input)
+        .ok()
+        .and_then(|name| TimeZone::get(&name).ok())
+        .unwrap_or(TimeZone::UTC)
 }
 
 // --- output formatting -----------------------------------------------------
@@ -375,7 +536,7 @@ fn hour_minute_re() -> &'static Regex {
 
 /// Rebuild the output to mirror the original match (or honor an explicit
 /// format). Mirrors `Tztr.format_time`.
-fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str, local: bool) -> String {
+fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
     let offset_secs = zoned.offset().seconds();
     let tz = if offset_secs == 0 {
         "Z".to_string()
@@ -387,13 +548,9 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str, local: bool) 
     match fmt {
         Some(Format::Time) => return strf(zoned, "%H:%M:%S"),
         Some(Format::Iso) => return format!("{}{}", strf(zoned, "%Y-%m-%d %H:%M:%S"), tz),
-        Some(Format::Short) => {
-            let base = strf(zoned, "%Y-%m-%d %H:%M");
-            if local {
-                return base;
-            }
-            return format!("{base} {abbrev}");
-        }
+        // Always labelled: a cross-timezone tool whose output does not say
+        // which zone it is in is not useful, and this output gets pasted.
+        Some(Format::Short) => return format!("{} {abbrev}", strf(zoned, "%Y-%m-%d %H:%M")),
         None => {}
     }
 
@@ -442,7 +599,7 @@ mod tests {
     use super::*;
 
     fn tr(line: &str, to: &str) -> String {
-        translate(line, to, None, None, false, None)
+        translate(line, to, None, None, None)
     }
 
     #[test]
@@ -514,25 +671,9 @@ mod tests {
                 "America/Los_Angeles",
                 None,
                 Some(Format::Short),
-                false,
                 None
             ),
             "2026-04-03 05:00 PDT"
-        );
-    }
-
-    #[test]
-    fn formats_as_short_without_zone_when_local() {
-        assert_eq!(
-            translate(
-                "2026-04-03T12:00:00Z",
-                "America/Los_Angeles",
-                None,
-                Some(Format::Short),
-                true,
-                None
-            ),
-            "2026-04-03 05:00"
         );
     }
 
@@ -544,7 +685,6 @@ mod tests {
                 "America/Los_Angeles",
                 None,
                 Some(Format::Iso),
-                false,
                 None
             ),
             "2026-04-03 05:00:00-07:00"
@@ -559,7 +699,6 @@ mod tests {
                 "America/Los_Angeles",
                 None,
                 Some(Format::Time),
-                false,
                 None
             ),
             "05:00:00"
@@ -574,7 +713,6 @@ mod tests {
                 "UTC",
                 Some("America/Los_Angeles"),
                 None,
-                false,
                 None
             ),
             "2026-04-03T19:00:00Z"
@@ -586,27 +724,83 @@ mod tests {
         assert_eq!(tr("no timestamps here", "UTC"), "no timestamps here");
     }
 
+    fn tz(input: &str) -> String {
+        resolve_tz(input).expect("resolvable")
+    }
+
     #[test]
     fn resolve_tz_abbreviations_and_cities() {
-        assert_eq!(resolve_tz("pst"), "America/Los_Angeles");
-        assert_eq!(resolve_tz("PST"), "America/Los_Angeles");
-        assert_eq!(resolve_tz("sf"), "America/Los_Angeles");
-        assert_eq!(resolve_tz("nyc"), "America/New_York");
-        assert_eq!(resolve_tz("tokyo"), "Asia/Tokyo");
-        assert_eq!(resolve_tz("utc"), "UTC");
+        for (input, expected) in [
+            ("pst", "America/Los_Angeles"),
+            ("PST", "America/Los_Angeles"),
+            ("sf", "America/Los_Angeles"),
+            ("nyc", "America/New_York"),
+            ("tokyo", "Asia/Tokyo"),
+            ("utc", "UTC"),
+        ] {
+            assert_eq!(tz(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn alias_table_is_sorted_and_unique() {
+        // `-l` prints this table in order and must match Ruby's live sort;
+        // the table is hand-written, so the invariant needs a guard.
+        let keys: Vec<&str> = timezone_aliases().iter().map(|(k, _)| *k).collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn gmt_is_utc_not_london() {
+        // Europe/London follows British Summer Time; GMT does not.
+        assert_eq!(tz("gmt"), "UTC");
+        assert_eq!(tz("bst"), "Europe/London");
+        assert_eq!(tz("london"), "Europe/London");
+        assert_eq!(
+            tr("2026-07-15T12:00:00Z", &tz("gmt")),
+            "2026-07-15T12:00:00Z"
+        );
     }
 
     #[test]
     fn resolve_tz_numeric_offsets() {
-        assert_eq!(resolve_tz("-7"), "Etc/GMT+7");
-        assert_eq!(resolve_tz("+9"), "Etc/GMT-9");
-        assert_eq!(resolve_tz("0"), "UTC");
-        assert_eq!(resolve_tz("-12"), "Etc/GMT+12");
+        assert_eq!(tz("-7"), "Etc/GMT+7");
+        assert_eq!(tz("+9"), "Etc/GMT-9");
+        assert_eq!(tz("0"), "UTC");
+        assert_eq!(tz("-12"), "Etc/GMT+12");
+        assert_eq!(tz("14"), "Etc/GMT-14");
     }
 
     #[test]
     fn resolve_tz_passes_through_iana() {
-        assert_eq!(resolve_tz("America/Chicago"), "America/Chicago");
+        assert_eq!(tz("America/Chicago"), "America/Chicago");
+        assert_eq!(tz(":America/Chicago"), "America/Chicago");
+    }
+
+    #[test]
+    fn resolve_tz_rejects_what_it_cannot_resolve() {
+        use TzError::*;
+        for (input, expected) in [
+            ("Bogus/Zone", Unknown("Bogus/Zone".into())),
+            ("", Unknown("".into())),
+            ("America/New York", Unknown("America/New York".into())),
+            ("+5:30", Unknown("+5:30".into())),
+            ("15", OffsetOutOfRange("15".into())),
+            ("-13", OffsetOutOfRange("-13".into())),
+        ] {
+            assert_eq!(resolve_tz(input), Err(expected), "{input}");
+        }
+        assert_eq!(
+            resolve_tz("15").unwrap_err().to_string(),
+            "offset out of range: 15 (expected -12..14)"
+        );
+        assert_eq!(
+            resolve_tz("Bogus/Zone").unwrap_err().to_string(),
+            "unknown timezone: Bogus/Zone"
+        );
     }
 
     #[test]
@@ -616,7 +810,6 @@ mod tests {
             "America/Los_Angeles",
             None,
             None,
-            false,
             false,
             None,
         );
@@ -632,7 +825,7 @@ mod tests {
 
     #[test]
     fn matches_detect_omits_translated() {
-        let m = matches("15:30 PST", "UTC", None, None, false, true, None);
+        let m = matches("15:30 PST", "UTC", None, None, true, None);
         assert_eq!(m[0].detected_format, "time");
         assert_eq!(m[0].detected_tz.as_deref(), Some("PST"));
         assert_eq!(m[0].translated, None);
@@ -647,7 +840,6 @@ mod tests {
                 "UTC",
                 Some("America/Los_Angeles"),
                 None,
-                false,
                 Some("2026-01-15")
             ),
             "23:30 UTC"
@@ -659,11 +851,188 @@ mod tests {
                 "UTC",
                 Some("America/Los_Angeles"),
                 None,
-                false,
                 Some("2026-07-15")
             ),
             "22:30 UTC"
         );
+    }
+
+    // --- B1: zone detection is an allowlist, not [A-Z]{2,4} ----------------
+
+    fn tr_on(line: &str, to: &str, date: &str) -> String {
+        translate(line, to, None, None, Some(date))
+    }
+
+    #[test]
+    fn natively_known_abbreviations_keep_their_fixed_offset() {
+        assert_eq!(tr_on("15:30 PST", "UTC", "2026-04-03"), "23:30 UTC");
+        assert_eq!(tr_on("15:30 EST", "UTC", "2026-04-03"), "20:30 UTC");
+    }
+
+    #[test]
+    fn alias_only_abbreviations_resolve_through_the_alias_table() {
+        // Previously matched by [A-Z]{2,4}, then silently ignored by the
+        // parser — a Tokyo time was treated as local and came out 9h wrong.
+        assert_eq!(tr_on("15:30 JST", "UTC", "2026-04-03"), "06:30 UTC");
+        assert_eq!(tr_on("15:30 CET", "UTC", "2026-01-15"), "14:30 UTC");
+        assert_eq!(tr_on("15:30 CET", "UTC", "2026-07-15"), "13:30 UTC");
+        assert_eq!(tr_on("15:30 AEST", "UTC", "2026-06-15"), "05:30 UTC");
+    }
+
+    #[test]
+    fn log_levels_are_not_timezones() {
+        assert_eq!(
+            tr_on("15:30 INFO server started", "UTC", "2026-04-03"),
+            "15:30 UTC INFO server started"
+        );
+        assert_eq!(
+            tr_on("15:30 WARN disk low", "UTC", "2026-04-03"),
+            "15:30 UTC WARN disk low"
+        );
+        assert_eq!(
+            tr("2026-04-03 12:00:00 ERROR db failed", "UTC"),
+            "2026-04-03 12:00:00 UTC ERROR db failed"
+        );
+    }
+
+    // --- B6: DST transitions ----------------------------------------------
+
+    #[test]
+    fn ambiguous_wall_clock_takes_the_earlier_occurrence() {
+        // A repeated hour resolves to the first (daylight) occurrence: jiff's
+        // `compatible` disambiguation, which is also macOS date(1), Temporal,
+        // RFC 5545 and ICU. Pinned so a jiff default change cannot move it by
+        // an hour, twice a year, in every DST zone, without a test failing.
+        let from = Some("America/New_York");
+        assert_eq!(
+            translate("2026-11-01 01:30:00", "UTC", from, None, None),
+            "2026-11-01 05:30:00 UTC" // EDT (-4), not EST (-5)
+        );
+        assert_eq!(
+            translate("01:30", "UTC", from, None, Some("2026-11-01")),
+            "05:30 UTC"
+        );
+        assert_eq!(
+            translate(
+                "2026-10-25 02:30:00",
+                "UTC",
+                Some("Europe/Berlin"),
+                None,
+                None
+            ),
+            "2026-10-25 00:30:00 UTC" // CEST (+2), not CET (+1)
+        );
+    }
+
+    #[test]
+    fn nonexistent_wall_clock_springs_forward() {
+        assert_eq!(
+            translate(
+                "2026-03-08 02:30:00",
+                "UTC",
+                Some("America/New_York"),
+                None,
+                None
+            ),
+            "2026-03-08 07:30:00 UTC"
+        );
+    }
+
+    // --- B7: overflowing times normalize, impossible dates do not ----------
+
+    #[test]
+    fn legal_but_overflowing_times_normalize() {
+        assert_eq!(tr("24:00 UTC", "UTC"), "00:00 UTC");
+        assert_eq!(tr("23:59:60 UTC", "UTC"), "00:00:00 UTC");
+    }
+
+    #[test]
+    fn genuinely_out_of_range_times_are_left_alone() {
+        for input in ["25:00 UTC", "12:60 UTC", "24:00:01 UTC"] {
+            assert_eq!(tr(input, "UTC"), input, "{input}");
+        }
+    }
+
+    #[test]
+    fn impossible_dates_pass_through_untouched() {
+        // Rewriting 2026-02-30 to 2026-03-02 moves a logged event to another
+        // day with no signal. Leave it exactly as found.
+        for input in [
+            "2026-02-30T12:00:00Z",
+            "2026-02-29T12:00:00Z",
+            "2026-13-03T12:00:00Z",
+        ] {
+            assert_eq!(tr(input, "America/Los_Angeles"), input, "{input}");
+        }
+        // ...and a real leap day still converts.
+        assert_eq!(
+            tr("2028-02-29T12:00:00Z", "UTC"),
+            "2028-02-29T12:00:00Z",
+            "2028 is a leap year"
+        );
+    }
+
+    // --- B2: 12-hour clock ------------------------------------------------
+
+    #[test]
+    fn applies_the_meridiem() {
+        for (input, expected) in [
+            ("11:30:00 PM", "23:30:00 UTC"),
+            ("12:30:00 AM", "00:30:00 UTC"),
+            ("12:30:00 PM", "12:30:00 UTC"),
+            ("1:00:00 PM", "13:00:00 UTC"),
+            ("11:59:59 PM", "23:59:59 UTC"),
+            ("12:00 AM", "00:00 UTC"),
+            ("12:00 PM", "12:00 UTC"),
+        ] {
+            assert_eq!(tr(input, "UTC"), expected, "{input}");
+        }
+        assert_eq!(
+            tr("2026-04-03 03:45:00 PM", "UTC"),
+            "2026-04-03 15:45:00 UTC"
+        );
+    }
+
+    #[test]
+    fn a_twelve_hour_time_may_carry_a_zone() {
+        assert_eq!(tr("3:45 PM PST", "UTC"), "23:45 UTC");
+        // The meridiem is case-insensitive; zone abbreviations are not, so a
+        // lowercase `pst` is ordinary text and is left where it is.
+        assert_eq!(tr("3:45 pm pst", "UTC"), "15:45 UTC pst");
+        assert_eq!(
+            tr("2026-04-03 03:45:00 PM PST", "UTC"),
+            "2026-04-03 23:45:00 UTC"
+        );
+    }
+
+    #[test]
+    fn meridiem_is_not_read_as_a_zone() {
+        let m = matches("11:30:00 PM", "UTC", None, None, true, None);
+        assert_eq!(m[0].original, "11:30:00 PM");
+        assert_eq!(m[0].detected_tz, None);
+    }
+
+    #[test]
+    fn zone_abbreviations_are_the_documented_union() {
+        assert_eq!(ZONE_ABBREVIATIONS.len(), 30);
+        for a in ZONE_ABBREVIATIONS {
+            assert!(
+                zone_offset_seconds(a).is_some() || abbrev_zone(a).is_some(),
+                "{a} is detected but resolves to nothing"
+            );
+        }
+        for junk in ["INFO", "WARN", "ERROR", "PM", "AM", "TODO"] {
+            assert!(!ZONE_ABBREVIATIONS.contains(&junk), "{junk} is not a zone");
+        }
+    }
+
+    #[test]
+    fn detected_zone_is_the_one_that_converted() {
+        let m = matches("15:30 JST", "UTC", None, None, false, None);
+        assert_eq!(m[0].detected_tz.as_deref(), Some("JST"));
+        let m = matches("15:30 INFO", "UTC", None, None, false, None);
+        assert_eq!(m[0].original, "15:30");
+        assert_eq!(m[0].detected_tz, None);
     }
 
     #[test]
@@ -682,14 +1051,7 @@ mod tests {
             today.day()
         );
         assert_eq!(
-            translate(
-                "15:30 UTC",
-                "Etc/GMT+5",
-                None,
-                Some(Format::Iso),
-                false,
-                None
-            ),
+            translate("15:30 UTC", "Etc/GMT+5", None, Some(Format::Iso), None),
             expected
         );
     }

@@ -16,21 +16,63 @@ inputs, args, and `TZ` values.
   binary.
 - **Hand-rolled arg parsing** (no clap) to mirror Ruby's `OptionParser`
   surface exactly and keep the dependency tree small.
+- **`resolve_tz` is the validating boundary.** It returns
+  `Result<String, TzError>`; a zone that does not resolve is an error the CLI
+  exits on, never a silent fall back to UTC that answers in the wrong zone.
+
+## Zone detection
+
+Both implementations detect zone abbreviations from an explicit allowlist
+(`ZONE_ABBREVIATIONS`), not a `[A-Z]{2,4}` wildcard. The wildcard used to eat
+log levels (`15:30 INFO server started` lost the `INFO`) and meridiems, and it
+matched abbreviations the parser then silently ignored — `15:30 JST` came out
+as a *local* time, nine hours wrong, with no signal.
+
+The list is the union of the abbreviations Ruby's `Time.parse` resolves
+natively (`UT UTC GMT` plus E/C/M/P × ST/DT) and the abbreviation-shaped keys of
+`TIMEZONE_ALIASES` (`Z ET CT MT PT HST AKST AKDT CET CEST BST IST JST KST HKT
+AEST AEDT NZST NZDT`). City nicknames (`sf`, `nyc`) are deliberately absent:
+they are `-t`/`-f` values, not things to look for inside text.
+
+How a detected abbreviation resolves depends on which half it came from:
+
+- The native ones are **fixed offsets** — `PST` is always −08:00, whatever the
+  date, because that is what `Time.parse` does.
+- The rest resolve **through the alias table to a real zone**, so they carry DST
+  rules: `15:30 CET` is 14:30 UTC in January and 13:30 UTC in July.
 
 ## Quirks replicated for parity
 
-The Rust port faithfully reproduces a few non-obvious behaviors of the Ruby
-reference (which leans on `Time.parse`):
+- **`from` is bypassed when an embedded zone is present**, matching Ruby's
+  branch order. `-f pst` has no effect on `12:00 JST`.
+- **"Today" fills date-less inputs**, taken in the zone the timestamp is
+  expressed in. This is the documented DST caveat for time-only inputs;
+  `-d/--date` supplies the missing date, and `-v` now says out loud when the
+  assumption is being made.
+- **Ambiguous wall-clock times take the earlier occurrence.** A repeated hour at
+  a DST fall-back resolves to the daylight side — jiff's `compatible`
+  disambiguation, which also matches macOS `date(1)`, Temporal, RFC 5545 and
+  ICU. Ruby was changed to agree; there is a test pinning it on this side so a
+  jiff default change cannot move it silently.
 
-- **Unrecognized zone abbreviations are ignored.** `12:00 CET` (CET isn't in
-  Ruby's `Time.parse` zone table) is parsed as if it were in the *target* zone,
-  not CET. Only `UTC/GMT/UT/Z` and the US abbreviations (E/C/M/P × ST/DT) plus
-  numeric offsets are recognized.
-- **`from` is bypassed when an embedded zone is present** — even an
-  unrecognized one — matching Ruby's branch order.
-- **"Today" fills date-less inputs**, taken in the same zone Ruby's `ENV['TZ']`
-  would be set to for that branch. This is the documented DST caveat for
-  time-only inputs; `-d/--date` supplies the missing date.
+## Accepted divergences
+
+Deliberate, and excluded from the parity matrix:
+
+- **Long-option abbreviation and `-F` value completion.** Ruby's `OptionParser`
+  accepts any unambiguous prefix (`--js`, `--det`, `-F i`) for free. The Rust
+  parser requires exact spellings. Making Ruby strict would mean fighting
+  OptionParser; making Rust lenient is code nobody asked for. `--` itself *is*
+  supported on both sides.
+- **Non-UTF-8 lines in `-j`/`-J`.** A line with an undecodable byte still has
+  its timestamps converted in the default mode, with every other byte preserved
+  exactly (`regex::bytes`, no lossy decode). In the structured modes that line
+  is dropped instead — raw bytes in a JSON stream would corrupt the document for
+  whoever is reading it.
+- **`-i` error messages carry the filename** (`tztr: app.log: No such file or
+  directory (os error 2)`) where the streaming path does not (`tztr: No such
+  file or directory (os error 2)`). The streaming path is the one the Ruby error
+  messages were matched against.
 
 ## Performance
 

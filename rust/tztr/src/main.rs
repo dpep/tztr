@@ -1,6 +1,7 @@
 //! `tztr` CLI — Rust port of `bin/tztr`. Kept functionally identical to the
 //! Ruby reference (same flags, output, and behavior); see CLAUDE.md.
 
+use jiff::civil::Date;
 use serde_json::{json, Map, Value};
 use std::collections::VecDeque;
 use std::env;
@@ -8,7 +9,10 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
-use tztr::{matches, resolve_tz, timezone_aliases, translate, Format, Match};
+use tztr::{
+    has_bare_timestamp, matches, resolve_tz, timezone_aliases, today_in_zone, translate,
+    translate_bytes, Format, Match,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -17,18 +21,18 @@ Usage: tztr [options] [file]
 
 Timezone Translator - convert timestamps between timezones. Reads from stdin or file.
 
-    -f, --from TZ        Input timezone (default: auto-detect)
-    -t, --to TZ          Output timezone (default: $TZ, else UTC)
-    -l, --list           List timezone aliases
-    -i, --in-place       Edit file in place
-    -F, --format FMT     Output format: iso, short, time (default: preserve input)
-    -d, --date DATE      Reference date for time-only inputs (resolves DST)
-    -j, --json           Emit a JSON array of matches
-    -J, --ndjson         Emit newline-delimited JSON (one object per match)
-        --detect         Report detected format/zone without converting
-    -v, --verbose        Print diagnostics to stderr
-    -V, --version        Show version
-    -h, --help           Show this help
+    -f, --from TZ                    Input timezone (default: auto-detect)
+    -t, --to TZ                      Output timezone (default: $TZ, else UTC)
+    -l, --list                       List timezone aliases
+    -i, --in-place                   Edit file in place
+    -F, --format FMT                 Output format: iso, short, time (default: preserve input)
+    -d, --date DATE                  Reference date for time-only inputs (resolves DST)
+    -j, --json                       Emit a JSON array of matches
+    -J, --ndjson                     Emit newline-delimited JSON (one object per match)
+        --detect                     Report detected format/zone without converting
+    -v, --verbose                    Print diagnostics to stderr
+    -V, --version                    Show version
+    -h, --help                       Show this help
 
 Environment:
   TZ    Default timezone for input and output (overridden by -f / -t)
@@ -45,10 +49,11 @@ Examples:
 
 struct Options {
     from: Option<String>,
+    /// `from` was defaulted from `$TZ` rather than chosen with `-f`.
+    from_is_implicit: bool,
     to: String,
     format: Option<Format>,
     date: Option<String>,
-    local: bool,
     inplace: bool,
     json: bool,
     ndjson: bool,
@@ -89,6 +94,13 @@ fn run() -> Result<ExitCode, String> {
 
     let mut args: VecDeque<String> = env::args().skip(1).collect();
     while let Some(arg) = args.pop_front() {
+        // POSIX terminator: everything after it is a filename, flag-shaped or
+        // not. Handled before `take_value` borrows `args`.
+        if arg == "--" {
+            files.extend(args.drain(..));
+            break;
+        }
+
         // Resolve a token into (name, inline value). Handles `--opt=value` and
         // bundled short flags (`-vj` -> `-v -j`, `-tsf` -> `-t sf`), mirroring
         // Ruby's OptionParser: a value-taking flag consumes the rest of the
@@ -168,12 +180,13 @@ fn run() -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let to = resolve_tz(to_arg.as_deref().or(local_tz.as_deref()).unwrap_or("UTC"));
-    let from = from
-        .as_deref()
-        .map(resolve_tz)
-        .or_else(|| local_tz.as_deref().map(resolve_tz));
-    let local = to == resolve_tz(local_tz.as_deref().unwrap_or("UTC"));
+    let zone = |input: &str| resolve_tz(input).map_err(|e| e.to_string());
+    let to = zone(to_arg.as_deref().or(local_tz.as_deref()).unwrap_or("UTC"))?;
+    let from_is_implicit = from.is_none() && local_tz.is_some();
+    let from = match from.as_deref().or(local_tz.as_deref()) {
+        Some(f) => Some(zone(f)?),
+        None => None,
+    };
 
     let date = match date {
         Some(d) => Some(normalize_date(&d).ok_or_else(|| format!("invalid date: {d}"))?),
@@ -182,10 +195,10 @@ fn run() -> Result<ExitCode, String> {
 
     let opts = Options {
         from,
+        from_is_implicit,
         to,
         format,
         date,
-        local,
         inplace,
         json,
         ndjson,
@@ -223,20 +236,17 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
         return Err("-i requires a file argument".to_string());
     }
     for file in &opts.files {
-        let content = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
-        let translated: String = content
-            .split_inclusive('\n')
-            .map(|line| {
-                translate(
-                    line,
-                    &opts.to,
-                    opts.from.as_deref(),
-                    opts.format,
-                    opts.local,
-                    opts.date.as_deref(),
-                )
-            })
-            .collect();
+        let content = fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+        let mut translated: Vec<u8> = Vec::with_capacity(content.len());
+        for line in content.split_inclusive(|b| *b == b'\n') {
+            translated.extend_from_slice(&translate_bytes(
+                line,
+                &opts.to,
+                opts.from.as_deref(),
+                opts.format,
+                opts.date.as_deref(),
+            ));
+        }
         if translated != content {
             fs::write(file, translated).map_err(|e| format!("{file}: {e}"))?;
         }
@@ -244,33 +254,45 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// What the line loop carries between lines: where output goes, the `-j` buffer
+/// (that mode has to see every match before it can print an array), and whether
+/// `-v` has already disclosed its assumptions.
+struct Sink<W: Write> {
+    out: W,
+    collected: Vec<Match>,
+    disclosed: bool,
+}
+
 fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
     let stdout = io::stdout();
-    let mut out = stdout.lock();
-    let mut collected: Vec<Match> = Vec::new();
+    let mut sink = Sink {
+        out: stdout.lock(),
+        collected: Vec::new(),
+        disclosed: false,
+    };
 
     let result = (|| -> io::Result<()> {
         if opts.files.is_empty() {
             let stdin = io::stdin();
             for_each_line(stdin.lock(), |line| {
-                handle_line(opts, json_mode, line, &mut out, &mut collected)
+                handle_line(opts, json_mode, line, &mut sink)
             })?;
         } else {
             for file in &opts.files {
                 let f = fs::File::open(file)?;
                 for_each_line(BufReader::new(f), |line| {
-                    handle_line(opts, json_mode, line, &mut out, &mut collected)
+                    handle_line(opts, json_mode, line, &mut sink)
                 })?;
             }
         }
         if opts.json {
             let arr = Value::Array(
-                collected
+                sink.collected
                     .iter()
                     .map(|m| json_value(m, opts.detect))
                     .collect(),
             );
-            writeln!(out, "{}", serde_json::to_string_pretty(&arr).unwrap())?;
+            writeln!(sink.out, "{}", serde_json::to_string_pretty(&arr).unwrap())?;
         }
         Ok(())
     })();
@@ -279,20 +301,62 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn handle_line(
+/// Say out loud what a bare timestamp forced us to assume: the source zone,
+/// taken from `$TZ` rather than chosen, and today's date for DST. A tester got
+/// a wrong answer from exactly these two silent assumptions and only caught it
+/// because a bare line and an ISO line in the same output disagreed by an hour.
+/// stderr only, so `-j`/`-J` stdout stays clean JSON.
+fn disclose_assumptions(opts: &Options) {
+    if let Some(from) = opts.from.as_deref().filter(|_| opts.from_is_implicit) {
+        eprintln!("tztr: from={from} (implicit, from $TZ) to={}", opts.to);
+    }
+    if opts.date.is_none() {
+        let zone = opts.from.as_deref().unwrap_or(&opts.to);
+        eprintln!(
+            "tztr: no -d given, assuming {} for DST resolution",
+            today_in_zone(zone)
+        );
+    }
+}
+
+/// Handle one raw input line. A line that is not valid UTF-8 still has its
+/// timestamps converted, but every byte around them survives untouched — these
+/// are people's logs, and lossy decoding rewrote them. Structured modes drop
+/// such a line instead: raw bytes in a JSON stream corrupt it for the reader.
+fn handle_line<W: Write>(
     opts: &Options,
     json_mode: bool,
-    line: &str,
-    out: &mut dyn Write,
-    collected: &mut Vec<Match>,
+    raw: &[u8],
+    sink: &mut Sink<W>,
 ) -> io::Result<()> {
+    let line = match std::str::from_utf8(raw) {
+        Ok(line) => line,
+        Err(_) => {
+            if !json_mode && !opts.detect {
+                sink.out.write_all(&translate_bytes(
+                    raw,
+                    &opts.to,
+                    opts.from.as_deref(),
+                    opts.format,
+                    opts.date.as_deref(),
+                ))?;
+            }
+            return Ok(());
+        }
+    };
+
+    if opts.verbose && !opts.detect && !sink.disclosed && has_bare_timestamp(line) {
+        sink.disclosed = true;
+        disclose_assumptions(opts);
+    }
+    let out = &mut sink.out;
+
     if json_mode {
         let ms = matches(
             line,
             &opts.to,
             opts.from.as_deref(),
             opts.format,
-            opts.local,
             opts.detect,
             opts.date.as_deref(),
         );
@@ -301,18 +365,10 @@ fn handle_line(
                 writeln!(out, "{}", to_json(&m, opts.detect))?;
             }
         } else {
-            collected.extend(ms);
+            sink.collected.extend(ms);
         }
     } else if opts.detect {
-        for m in matches(
-            line,
-            &opts.to,
-            opts.from.as_deref(),
-            None,
-            false,
-            true,
-            None,
-        ) {
+        for m in matches(line, &opts.to, opts.from.as_deref(), None, true, None) {
             writeln!(
                 out,
                 "{}\t{}\t{}",
@@ -330,7 +386,6 @@ fn handle_line(
                 &opts.to,
                 opts.from.as_deref(),
                 opts.format,
-                opts.local,
                 opts.date.as_deref(),
             )
         )?;
@@ -339,9 +394,11 @@ fn handle_line(
 }
 
 /// Iterate lines preserving their trailing newline, like Ruby's `each_line`.
+/// Stays in bytes: decoding happens per line, so one bad byte cannot rewrite
+/// the rest of the stream.
 fn for_each_line<R: BufRead>(
     mut reader: R,
-    mut f: impl FnMut(&str) -> io::Result<()>,
+    mut f: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut buf = Vec::new();
     loop {
@@ -350,8 +407,7 @@ fn for_each_line<R: BufRead>(
         if n == 0 {
             break;
         }
-        let line = String::from_utf8_lossy(&buf);
-        f(&line)?;
+        f(&buf)?;
     }
     Ok(())
 }
@@ -434,41 +490,41 @@ fn help_doc() -> Value {
     })
 }
 
-/// Normalize a flexible date string to `YYYY-MM-DD`, or `None` if unparseable.
-/// Covers the common forms Ruby's `Date.parse` accepts for our use; ambiguous
-/// day-first slash dates (e.g. `1/15/2026`) are rejected, as in Ruby.
+/// Normalize a `-d` date to `YYYY-MM-DD`, or `None` if it is not one of the
+/// documented forms — `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYYMMDD`, `Month D, YYYY`,
+/// `D Month YYYY`. Ambiguous day-first/month-first slash dates (`1/15/2026`)
+/// are rejected rather than guessed at.
 fn normalize_date(input: &str) -> Option<String> {
     use regex::Regex;
     let input = input.trim();
 
-    // ISO and year-first slash: YYYY-MM-DD / YYYY/MM/DD
-    let iso = Regex::new(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$").unwrap();
-    if let Some(c) = iso.captures(input) {
-        return build_date(&c[1], c[2].parse().ok()?, c[3].parse().ok()?);
+    // YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD
+    let ymd = Regex::new(r"^(\d{4})(?:[-/](\d{1,2})[-/](\d{1,2})|(\d{2})(\d{2}))$").unwrap();
+    if let Some(c) = ymd.captures(input) {
+        let group = |a: usize, b: usize| c.get(a).or_else(|| c.get(b));
+        return build_date(&c[1], group(2, 4)?.as_str(), group(3, 5)?.as_str());
     }
 
-    // "Month D, YYYY" / "Month D YYYY"
+    // "Month D, YYYY" / "Mon D YYYY"
     let mdy = Regex::new(r"(?i)^([a-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})$").unwrap();
     if let Some(c) = mdy.captures(input) {
-        let month = month_number(&c[1])?;
-        return build_date(&c[3], month, c[2].parse().ok()?);
+        return build_date(&c[3], &month_number(&c[1])?.to_string(), &c[2]);
     }
 
     // "D Month YYYY"
     let dmy = Regex::new(r"(?i)^(\d{1,2})\s+([a-z]+)\.?,?\s+(\d{4})$").unwrap();
     if let Some(c) = dmy.captures(input) {
-        let month = month_number(&c[2])?;
-        return build_date(&c[3], month, c[1].parse().ok()?);
+        return build_date(&c[3], &month_number(&c[2])?.to_string(), &c[1]);
     }
 
     None
 }
 
-fn build_date(year: &str, month: u32, day: u32) -> Option<String> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    Some(format!("{year}-{month:02}-{day:02}"))
+/// Format the date, rejecting one the calendar does not have — `2026-02-30`
+/// used to pass a day <= 31 check and then silently no-op downstream.
+fn build_date(year: &str, month: &str, day: &str) -> Option<String> {
+    let date = Date::new(year.parse().ok()?, month.parse().ok()?, day.parse().ok()?).ok()?;
+    Some(date.strftime("%Y-%m-%d").to_string())
 }
 
 fn month_number(name: &str) -> Option<u32> {
