@@ -62,7 +62,7 @@ module Tztr
     'hst' => 'Pacific/Honolulu', 'akst' => 'America/Anchorage', 'akdt' => 'America/Anchorage',
     # Europe
     'cet' => 'Europe/Berlin', 'cest' => 'Europe/Berlin',
-    'gmt' => 'Europe/London', 'bst' => 'Europe/London',
+    'bst' => 'Europe/London',
     'ist' => 'Asia/Kolkata',
     # Asia/Pacific
     'jst' => 'Asia/Tokyo', 'kst' => 'Asia/Seoul',

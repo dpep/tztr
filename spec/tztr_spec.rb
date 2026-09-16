@@ -220,6 +220,15 @@ RSpec.describe Tztr do
       expect(Tztr.resolve_tz("utc")).to eq("UTC")
     end
 
+    it "resolves gmt to UTC, not to British Summer Time" do
+      expect(Tztr.resolve_tz("gmt")).to eq("UTC")
+      expect(Tztr.translate("2026-07-15T12:00:00Z", to: "gmt")).to eq("2026-07-15T12:00:00Z")
+    end
+
+    it "keeps bst as UK civil time" do
+      expect(Tztr.resolve_tz("bst")).to eq("Europe/London")
+    end
+
     it "resolves city names" do
       expect(Tztr.resolve_tz("sf")).to eq("America/Los_Angeles")
       expect(Tztr.resolve_tz("nyc")).to eq("America/New_York")
