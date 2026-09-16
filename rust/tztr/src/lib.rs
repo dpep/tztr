@@ -11,6 +11,7 @@
 use jiff::civil::{Date, DateTime};
 use jiff::tz::{Offset, TimeZone};
 use jiff::{Span, Zoned};
+use regex::bytes::Regex as BytesRegex;
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -71,10 +72,19 @@ fn abbrev_zone(token: &str) -> Option<TimeZone> {
     TimeZone::get(name).ok()
 }
 
+/// Every pattern is pure ASCII, so every substring one matches is too.
+fn ascii(bytes: &[u8]) -> &str {
+    std::str::from_utf8(bytes).expect("the patterns match ASCII only")
+}
+
 /// Timestamp patterns, ordered and first-match-wins per line (see CLAUDE.md).
 /// More specific patterns (with timezone) come before less specific ones.
-fn patterns() -> &'static [Regex] {
-    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+///
+/// Byte-oriented so a line with a stray non-UTF-8 byte in it can still have its
+/// timestamps converted without those bytes being rewritten. Unicode mode stays
+/// on: `\b` has to agree with Ruby's, which is Unicode-aware.
+fn patterns() -> &'static [BytesRegex] {
+    static PATTERNS: OnceLock<Vec<BytesRegex>> = OnceLock::new();
     PATTERNS
         .get_or_init(|| {
             let zone = zone_alternation();
@@ -105,7 +115,7 @@ fn patterns() -> &'static [Regex] {
                 format!(r"\b\d{{1,2}}:\d{{2}}{secs}\b"),
             ]
             .iter()
-            .map(|p| Regex::new(p).expect("valid pattern"))
+            .map(|p| BytesRegex::new(p).expect("valid pattern"))
             .collect()
         })
         .as_slice()
@@ -188,22 +198,37 @@ pub fn translate(
     format: Option<Format>,
     date: Option<&str>,
 ) -> String {
+    let out = translate_bytes(line.as_bytes(), to, from, format, date);
+    String::from_utf8(out).expect("ASCII replacements inside valid UTF-8 stay valid UTF-8")
+}
+
+/// [`translate`] for input that may not be valid UTF-8 — a log line with a
+/// stray byte in it. Timestamps still convert; every other byte, valid or not,
+/// comes out exactly as it went in.
+pub fn translate_bytes(
+    line: &[u8],
+    to: &str,
+    from: Option<&str>,
+    format: Option<Format>,
+    date: Option<&str>,
+) -> Vec<u8> {
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
 
     for pattern in patterns() {
         if pattern.is_match(line) {
             return pattern
-                .replace_all(line, |caps: &regex::Captures| {
-                    let m = &caps[0];
+                .replace_all(line, |caps: &regex::bytes::Captures| {
+                    let m = ascii(&caps[0]);
                     convert_match(m, from_tz.as_ref(), &to_tz, format, date)
                         .unwrap_or_else(|| m.to_string())
+                        .into_bytes()
                 })
                 .into_owned();
         }
     }
 
-    line.to_string()
+    line.to_vec()
 }
 
 /// Per-match structured analysis of a line. With `detect`, translation is
@@ -221,9 +246,9 @@ pub fn matches(
     let mut results = Vec::new();
 
     for pattern in patterns() {
-        if pattern.is_match(line) {
-            for m in pattern.find_iter(line) {
-                let original = m.as_str();
+        if pattern.is_match(line.as_bytes()) {
+            for m in pattern.find_iter(line.as_bytes()) {
+                let original = ascii(m.as_bytes());
                 let translated = if detect {
                     None
                 } else {

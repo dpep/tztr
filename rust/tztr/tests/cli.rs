@@ -231,6 +231,63 @@ fn aborts_on_unparseable_date() {
     assert!(!ok);
 }
 
+// --- B8: non-UTF-8 input keeps its bytes ------------------------------------
+
+#[test]
+fn passes_invalid_utf8_lines_through_byte_for_byte() {
+    // from_utf8_lossy silently rewrote these two bytes to U+FFFD, corrupting
+    // the user's log on the way past.
+    let input: &[u8] = b"2026-04-03T12:00:00Z \xff\xfe junk\n";
+    let o = run_tz(input, &["-t", "pst"], Some("UTC"));
+    assert!(o.ok, "{}", o.stderr);
+    assert_eq!(
+        o.stdout,
+        b"2026-04-03T05:00:00-07:00 \xff\xfe junk\n".to_vec()
+    );
+}
+
+#[test]
+fn an_invalid_line_does_not_stop_the_valid_ones() {
+    let input: &[u8] = b"2026-04-03T12:00:00Z\n\xff\xfe\n2026-04-03T13:00:00Z\n";
+    let o = run_tz(input, &["-t", "utc"], Some("UTC"));
+    assert!(o.ok, "{}", o.stderr);
+    assert_eq!(
+        o.stdout,
+        b"2026-04-03T12:00:00Z\n\xff\xfe\n2026-04-03T13:00:00Z\n".to_vec()
+    );
+}
+
+#[test]
+fn in_place_edit_keeps_bytes_it_cannot_decode() {
+    // `-i` used to abort on the whole file ("stream did not contain valid
+    // UTF-8") and leave it untranslated.
+    let path = std::env::temp_dir().join("tztr-inplace-bytes.log");
+    std::fs::write(&path, b"2026-04-03T12:00:00Z \xff\xfe junk\n").unwrap();
+    let o = run_tz(
+        b"",
+        &["-i", "-t", "utc", path.to_str().unwrap()],
+        Some("pst"),
+    );
+    assert!(o.ok, "{}", o.stderr);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"2026-04-03T12:00:00Z \xff\xfe junk\n".to_vec()
+    );
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn structured_output_skips_invalid_lines_and_stays_parseable() {
+    // Raw bytes cannot go into a JSON stream; the line is dropped from the
+    // structured view rather than corrupting stdout for the reader.
+    let input: &[u8] = b"\xff\xfe\n2026-04-03T12:00:00Z\n";
+    let o = run_tz(input, &["-t", "pst", "-j"], Some("UTC"));
+    assert!(o.ok, "{}", o.stderr);
+    let v: serde_json::Value = serde_json::from_str(o.out()).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["translated"], "2026-04-03T05:00:00-07:00");
+}
+
 // --- B14: `-F short` always says which zone ---------------------------------
 
 #[test]

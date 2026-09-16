@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
-use tztr::{matches, resolve_tz, timezone_aliases, translate, Format, Match};
+use tztr::{matches, resolve_tz, timezone_aliases, translate, translate_bytes, Format, Match};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -221,19 +221,17 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
         return Err("-i requires a file argument".to_string());
     }
     for file in &opts.files {
-        let content = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
-        let translated: String = content
-            .split_inclusive('\n')
-            .map(|line| {
-                translate(
-                    line,
-                    &opts.to,
-                    opts.from.as_deref(),
-                    opts.format,
-                    opts.date.as_deref(),
-                )
-            })
-            .collect();
+        let content = fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+        let mut translated: Vec<u8> = Vec::with_capacity(content.len());
+        for line in content.split_inclusive(|b| *b == b'\n') {
+            translated.extend_from_slice(&translate_bytes(
+                line,
+                &opts.to,
+                opts.from.as_deref(),
+                opts.format,
+                opts.date.as_deref(),
+            ));
+        }
         if translated != content {
             fs::write(file, translated).map_err(|e| format!("{file}: {e}"))?;
         }
@@ -276,13 +274,33 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Handle one raw input line. A line that is not valid UTF-8 still has its
+/// timestamps converted, but every byte around them survives untouched — these
+/// are people's logs, and lossy decoding rewrote them. Structured modes drop
+/// such a line instead: raw bytes in a JSON stream corrupt it for the reader.
 fn handle_line(
     opts: &Options,
     json_mode: bool,
-    line: &str,
+    raw: &[u8],
     out: &mut dyn Write,
     collected: &mut Vec<Match>,
 ) -> io::Result<()> {
+    let line = match std::str::from_utf8(raw) {
+        Ok(line) => line,
+        Err(_) => {
+            if !json_mode && !opts.detect {
+                out.write_all(&translate_bytes(
+                    raw,
+                    &opts.to,
+                    opts.from.as_deref(),
+                    opts.format,
+                    opts.date.as_deref(),
+                ))?;
+            }
+            return Ok(());
+        }
+    };
+
     if json_mode {
         let ms = matches(
             line,
@@ -326,9 +344,11 @@ fn handle_line(
 }
 
 /// Iterate lines preserving their trailing newline, like Ruby's `each_line`.
+/// Stays in bytes: decoding happens per line, so one bad byte cannot rewrite
+/// the rest of the stream.
 fn for_each_line<R: BufRead>(
     mut reader: R,
-    mut f: impl FnMut(&str) -> io::Result<()>,
+    mut f: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut buf = Vec::new();
     loop {
@@ -337,8 +357,7 @@ fn for_each_line<R: BufRead>(
         if n == 0 {
             break;
         }
-        let line = String::from_utf8_lossy(&buf);
-        f(&line)?;
+        f(&buf)?;
     }
     Ok(())
 }
