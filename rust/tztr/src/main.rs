@@ -18,18 +18,18 @@ Usage: tztr [options] [file]
 
 Timezone Translator - convert timestamps between timezones. Reads from stdin or file.
 
-    -f, --from TZ        Input timezone (default: auto-detect)
-    -t, --to TZ          Output timezone (default: $TZ, else UTC)
-    -l, --list           List timezone aliases
-    -i, --in-place       Edit file in place
-    -F, --format FMT     Output format: iso, short, time (default: preserve input)
-    -d, --date DATE      Reference date for time-only inputs (resolves DST)
-    -j, --json           Emit a JSON array of matches
-    -J, --ndjson         Emit newline-delimited JSON (one object per match)
-        --detect         Report detected format/zone without converting
-    -v, --verbose        Print diagnostics to stderr
-    -V, --version        Show version
-    -h, --help           Show this help
+    -f, --from TZ                    Input timezone (default: auto-detect)
+    -t, --to TZ                      Output timezone (default: $TZ, else UTC)
+    -l, --list                       List timezone aliases
+    -i, --in-place                   Edit file in place
+    -F, --format FMT                 Output format: iso, short, time (default: preserve input)
+    -d, --date DATE                  Reference date for time-only inputs (resolves DST)
+    -j, --json                       Emit a JSON array of matches
+    -J, --ndjson                     Emit newline-delimited JSON (one object per match)
+        --detect                     Report detected format/zone without converting
+    -v, --verbose                    Print diagnostics to stderr
+    -V, --version                    Show version
+    -h, --help                       Show this help
 
 Environment:
   TZ    Default timezone for input and output (overridden by -f / -t)
@@ -89,6 +89,13 @@ fn run() -> Result<ExitCode, String> {
 
     let mut args: VecDeque<String> = env::args().skip(1).collect();
     while let Some(arg) = args.pop_front() {
+        // POSIX terminator: everything after it is a filename, flag-shaped or
+        // not. Handled before `take_value` borrows `args`.
+        if arg == "--" {
+            files.extend(args.drain(..));
+            break;
+        }
+
         // Resolve a token into (name, inline value). Handles `--opt=value` and
         // bundled short flags (`-vj` -> `-v -j`, `-tsf` -> `-t sf`), mirroring
         // Ruby's OptionParser: a value-taking flag consumes the rest of the

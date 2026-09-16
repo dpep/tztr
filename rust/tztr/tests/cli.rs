@@ -231,6 +231,46 @@ fn aborts_on_unparseable_date() {
     assert!(!ok);
 }
 
+// --- B12/B15: help text and the `--` terminator -----------------------------
+
+#[test]
+fn help_option_lines_use_option_parsers_columns() {
+    // Ruby renders `-h` through OptionParser: four-space indent, flag column
+    // padded to 33, description at column 37. Plain `-h` has to match it byte
+    // for byte, so pin the geometry here.
+    let text = stdout("", &["-h"]);
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("    -") || l.starts_with("        --"))
+        .collect();
+    assert_eq!(lines.len(), 12, "expected one line per option");
+    for l in lines {
+        let b = l.as_bytes();
+        assert!(b.len() > 37, "{l:?}");
+        assert_eq!(b[36], b' ', "flag column not padded to 33: {l:?}");
+        assert_ne!(b[37], b' ', "description not at column 37: {l:?}");
+    }
+}
+
+#[test]
+fn accepts_the_posix_double_dash_terminator() {
+    assert_eq!(
+        stdout("2026-04-03T12:00:00Z", &["-t", "pst", "--"]),
+        "2026-04-03T05:00:00-07:00"
+    );
+    // ...and everything after it is a file, not a flag.
+    let path = std::env::temp_dir().join("-tztr-dashed.log");
+    std::fs::write(&path, "2026-04-03T12:00:00Z\n").unwrap();
+    let o = run_tz(
+        b"",
+        &["-t", "pst", "--", path.to_str().unwrap()],
+        Some("UTC"),
+    );
+    assert!(o.ok, "{}", o.stderr);
+    assert_eq!(o.out().trim_end(), "2026-04-03T05:00:00-07:00");
+    std::fs::remove_file(&path).unwrap();
+}
+
 // --- B10: one documented set of -d date forms -------------------------------
 
 #[test]
