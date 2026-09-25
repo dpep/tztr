@@ -15,6 +15,9 @@ Gem::Specification.new do |s|
 
   s.required_ruby_version = ">= 3.2"
 
+  # require_exact crashes on `--` and misreports `--flag=value` before 0.5 (Ruby 3.3 bundles 0.4).
+  s.add_dependency 'optparse', '>= 0.5'
+
   s.add_development_dependency 'debug', '>= 1'
   s.add_development_dependency 'ice_age', '>= 0.2'
   s.add_development_dependency 'rspec', '>= 3.10'

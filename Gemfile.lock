@@ -2,6 +2,7 @@ PATH
   remote: .
   specs:
     tztr (0.2.0)
+      optparse (>= 0.5)
 
 GEM
   remote: https://rubygems.org/
@@ -20,6 +21,7 @@ GEM
       prism (>= 1.3.0)
       rdoc (>= 4.0.0)
       reline (>= 0.4.2)
+    optparse (0.8.1)
     pp (0.6.3)
       prettyprint
     prettyprint (0.2.0)
@@ -78,6 +80,7 @@ CHECKSUMS
   ice_age (0.2.0) sha256=2cfd333ac6791d2e8abaf3060afd0c88c57868beca40d0d9579b7c5534bbbb73
   io-console (0.8.2) sha256=d6e3ae7a7cc7574f4b8893b4fca2162e57a825b223a177b7afa236c5ef9814cc
   irb (1.17.0) sha256=168c4ddb93d8a361a045c41d92b2952c7a118fa73f23fe14e55609eb7a863aae
+  optparse (0.8.1) sha256=42bea10d53907ccff4f080a69991441d611fbf8733b60ed1ce9ee365ce03bd1a
   pp (0.6.3) sha256=2951d514450b93ccfeb1df7d021cae0da16e0a7f95ee1e2273719669d0ab9df6
   prettyprint (0.2.0) sha256=2bc9e15581a94742064a3cc8b0fb9d45aae3d03a1baa6ef80922627a0766f193
   prism (1.9.0) sha256=7b530c6a9f92c24300014919c9dcbc055bf4cdf51ec30aed099b06cd6674ef85
