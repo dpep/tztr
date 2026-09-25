@@ -91,52 +91,52 @@ fn ascii(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("the patterns match ASCII only")
 }
 
-/// Timestamp patterns, ordered and first-match-wins per line (see CLAUDE.md).
-/// More specific patterns (with timezone) come before less specific ones.
+/// Every timestamp format as one alternation, most specific first. The regex
+/// crate tries alternatives in order at each position, as Ruby does, so a
+/// longer format wins over a shorter one inside it, and one pass converts every
+/// timestamp on the line whatever its format. Mirrors `Tztr::TIMESTAMP`.
 ///
 /// Byte-oriented so a line with a stray non-UTF-8 byte in it can still have its
 /// timestamps converted without those bytes being rewritten. Unicode mode stays
 /// on: `\b` has to agree with Ruby's, which is Unicode-aware.
-fn patterns() -> &'static [BytesRegex] {
-    static PATTERNS: OnceLock<Vec<BytesRegex>> = OnceLock::new();
-    PATTERNS
-        .get_or_init(|| {
-            let zone = zone_alternation();
-            // A trailing zone token: an allowlisted abbreviation or +HHMM.
-            let tz = format!(r"(?:(?:{zone})\b|[+-]\d{{4}}\b)");
-            // Seconds and fractional seconds, both optional.
-            let secs = r"(?::\d{2}(?:\.\d+)?)?";
-            // A meridiem, optionally followed by a zone ("3:45 PM PST"). A
-            // dotted one takes its closing dot; an undotted one leaves a
-            // following full stop to the sentence.
-            let mer = format!(r" ?[AaPp](?:\.[Mm]\.|\.?[Mm]\b)(?: ?{tz})?");
-            [
-                // ISO 8601 with Z or offset
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})".to_string(),
-                // ISO 8601 without timezone
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
-                // Date space 12-hour time — above the with-tz pattern, and the
-                // date must be part of the match or the time resolves its DST
-                // against today instead of the date beside it.
-                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{1,2}}:\d{{2}}{secs}{mer}"),
-                // Date space time with tz
-                format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)? ?{tz}"),
-                // Date space time
-                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
-                // 12-hour time
-                format!(r"\b\d{{1,2}}:\d{{2}}{secs}{mer}"),
-                // Time with tz
-                format!(r"\b\d{{1,2}}:\d{{2}}{secs} ?{tz}"),
-                // Time with offset
-                format!(r"\b\d{{1,2}}:\d{{2}}{secs}[+-]\d{{2}}:?\d{{2}}\b"),
-                // Bare time
-                format!(r"\b\d{{1,2}}:\d{{2}}{secs}\b"),
-            ]
-            .iter()
-            .map(|p| BytesRegex::new(p).expect("valid pattern"))
-            .collect()
-        })
-        .as_slice()
+fn timestamp() -> &'static BytesRegex {
+    static RE: OnceLock<BytesRegex> = OnceLock::new();
+    RE.get_or_init(|| {
+        let zone = zone_alternation();
+        // A trailing zone token: an allowlisted abbreviation or +HHMM.
+        let tz = format!(r"(?:(?:{zone})\b|[+-]\d{{4}}\b)");
+        // Seconds and fractional seconds, both optional.
+        let secs = r"(?::\d{2}(?:\.\d+)?)?";
+        // A meridiem, optionally followed by a zone ("3:45 PM PST"). A
+        // dotted one takes its closing dot; an undotted one leaves a
+        // following full stop to the sentence.
+        let mer = format!(r" ?[AaPp](?:\.[Mm]\.|\.?[Mm]\b)(?: ?{tz})?");
+        let alternation = [
+            // ISO 8601 with Z or offset
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})".to_string(),
+            // ISO 8601 without timezone
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
+            // Date space 12-hour time — above the with-tz pattern, and the
+            // date must be part of the match or the time resolves its DST
+            // against today instead of the date beside it.
+            format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{1,2}}:\d{{2}}{secs}{mer}"),
+            // Date space time with tz
+            format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)? ?{tz}"),
+            // Date space time
+            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
+            // 12-hour time
+            format!(r"\b\d{{1,2}}:\d{{2}}{secs}{mer}"),
+            // Time with tz
+            format!(r"\b\d{{1,2}}:\d{{2}}{secs} ?{tz}"),
+            // Time with offset
+            format!(r"\b\d{{1,2}}:\d{{2}}{secs}[+-]\d{{2}}:?\d{{2}}\b"),
+            // Bare time
+            format!(r"\b\d{{1,2}}:\d{{2}}{secs}\b"),
+        ]
+        .map(|p| format!("(?:{p})"))
+        .join("|");
+        BytesRegex::new(&alternation).expect("valid pattern")
+    })
 }
 
 /// Why a user-supplied timezone could not be resolved.
@@ -233,20 +233,14 @@ pub fn translate_bytes(
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
 
-    for pattern in patterns() {
-        if pattern.is_match(line) {
-            return pattern
-                .replace_all(line, |caps: &regex::bytes::Captures| {
-                    let m = ascii(&caps[0]);
-                    convert_match(m, from_tz.as_ref(), &to_tz, format, date)
-                        .unwrap_or_else(|| m.to_string())
-                        .into_bytes()
-                })
-                .into_owned();
-        }
-    }
-
-    line.to_vec()
+    timestamp()
+        .replace_all(line, |caps: &regex::bytes::Captures| {
+            let m = ascii(&caps[0]);
+            convert_match(m, from_tz.as_ref(), &to_tz, format, date)
+                .unwrap_or_else(|| m.to_string())
+                .into_bytes()
+        })
+        .into_owned()
 }
 
 /// Per-match structured analysis of a line. With `detect`, translation is
@@ -274,29 +268,23 @@ pub fn matches_bytes(
 ) -> Vec<Match> {
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
-    let mut results = Vec::new();
-
-    for pattern in patterns() {
-        if pattern.is_match(line) {
-            for m in pattern.find_iter(line) {
-                let original = ascii(m.as_bytes());
-                let translated = if detect {
-                    None
-                } else {
-                    convert_match(original, from_tz.as_ref(), &to_tz, format, date)
-                };
-                results.push(Match {
-                    original: original.to_string(),
-                    detected_format: detect_format(original).to_string(),
-                    detected_tz: detect_zone(original),
-                    translated,
-                });
+    timestamp()
+        .find_iter(line)
+        .map(|m| {
+            let original = ascii(m.as_bytes());
+            let translated = if detect {
+                None
+            } else {
+                convert_match(original, from_tz.as_ref(), &to_tz, format, date)
+            };
+            Match {
+                original: original.to_string(),
+                detected_format: detect_format(original).to_string(),
+                detected_tz: detect_zone(original),
+                translated,
             }
-            break;
-        }
-    }
-
-    results
+        })
+        .collect()
 }
 
 fn convert_match(
@@ -353,11 +341,7 @@ impl Assumptions {
 
 /// What converting `line` would have to assume. See [`Assumptions`].
 pub fn assumptions(line: &[u8]) -> Assumptions {
-    let Some(pattern) = patterns().iter().find(|p| p.is_match(line)) else {
-        return Assumptions::default();
-    };
-
-    let dateless: Vec<&str> = pattern
+    let dateless: Vec<&str> = timestamp()
         .find_iter(line)
         .map(|m| ascii(m.as_bytes()))
         .filter(|s| detect_format(s) == "time")
@@ -675,6 +659,42 @@ mod tests {
 
     fn tr(line: &str, to: &str) -> String {
         translate(line, to, None, None, None)
+    }
+
+    #[test]
+    fn converts_every_timestamp_on_a_line_whatever_their_formats() {
+        let line = r#"{"ts":"2026-04-03T12:00:00Z","created":"2026-04-03 13:00:00 UTC","msg":"at 15:30 UTC"}"#;
+        assert_eq!(
+            translate(line, "America/Los_Angeles", None, None, Some("2026-04-03")),
+            r#"{"ts":"2026-04-03T05:00:00-07:00","created":"2026-04-03 06:00:00 PDT","msg":"at 08:30 PDT"}"#
+        );
+    }
+
+    #[test]
+    fn reports_every_timestamp_on_a_line_in_order() {
+        let m = matches(
+            "15:30 UTC then 2026-04-03T12:00:00Z",
+            "UTC",
+            None,
+            None,
+            true,
+            None,
+        );
+        let formats: Vec<_> = m.iter().map(|m| m.detected_format.as_str()).collect();
+        assert_eq!(formats, ["time", "iso"]);
+
+        let m = matches("2026-04-03 12:00:00 UTC", "UTC", None, None, true, None);
+        assert_eq!(
+            m.len(),
+            1,
+            "a shorter format must not match inside a longer one"
+        );
+    }
+
+    #[test]
+    fn assumptions_see_a_bare_time_beside_a_dated_one() {
+        let a = assumptions(b"2026-04-03T12:00:00Z then 15:30");
+        assert!(a.date && a.zone);
     }
 
     #[test]

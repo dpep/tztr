@@ -51,7 +51,7 @@ A few things that aren't obvious from a quick read:
 
 **`Tztr.translate` mutates `ENV['TZ']`.** Both `translate` and `parse` set `ENV['TZ']` as a side effect to coerce Ruby's `Time` parsing into the right zone. The spec helper resets `ENV['TZ'] = 'UTC'` in a `before(:each)` to keep tests isolated — anything new that exercises parsing should rely on that, or save/restore `TZ` itself.
 
-**Pattern matching is ordered and first-match-wins.** `PATTERNS` in `lib/tztr.rb` is iterated top-to-bottom; the first regex that matches the line is the *only* one used (`break result` after `gsub!`). More specific patterns (ISO with timezone) must come before less specific ones (bare time). When adding a new format, place it carefully and add tests covering ambiguous lines.
+**Pattern order is priority, not exclusivity.** `PATTERNS` in `lib/tztr.rb` is joined into one alternation (`TIMESTAMP`, and `timestamp()` in Rust) and scanned in a single pass, so every timestamp on a line converts whatever its format. At each position the alternatives are tried top-to-bottom, so more specific patterns (ISO with timezone) must come before less specific ones (bare time) or a shorter format will match inside a longer one. When adding a new format, place it carefully and add tests covering lines that mix formats.
 
 **Timezone resolution has three layers** (`Tztr.resolve_tz`):
 1. Numeric offset string (e.g. `"-7"`) → `Etc/GMT±N` — note the POSIX sign inversion (`-7` becomes `Etc/GMT+7`).

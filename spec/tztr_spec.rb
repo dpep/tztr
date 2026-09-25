@@ -64,6 +64,22 @@ RSpec.describe Tztr do
       expect(result).to eq("from 08:30 PDT to 09:45 PDT")
     end
 
+    it "converts every timestamp on a line, whatever their formats" do
+      line = '{"ts":"2026-04-03T12:00:00Z","created":"2026-04-03 13:00:00 UTC","msg":"at 15:30 UTC"}'
+      expect(Tztr.translate(line, to: "America/Los_Angeles", date: "2026-04-03"))
+        .to eq('{"ts":"2026-04-03T05:00:00-07:00","created":"2026-04-03 06:00:00 PDT","msg":"at 08:30 PDT"}')
+    end
+
+    it "reports every timestamp on a line, in order" do
+      result = Tztr.matches("15:30 UTC then 2026-04-03T12:00:00Z", detect: true)
+      expect(result.map { |m| m[:detected_format] }).to eq(%w[time iso])
+    end
+
+    it "does not also match a shorter format inside a longer one" do
+      expect(Tztr.matches("2026-04-03 12:00:00 UTC", detect: true).map { |m| m[:original] })
+        .to eq(["2026-04-03 12:00:00 UTC"])
+    end
+
     it "formats as short with abbreviation" do
       expect(Tztr.translate("2026-04-03T12:00:00Z", to: "America/Los_Angeles", format: :short))
         .to eq("2026-04-03 05:00 PDT")
@@ -585,6 +601,14 @@ RSpec.describe Tztr do
     it "says nothing about a date the timestamp already carries" do
       _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "nyc", "-v", stdin_data: "2026-04-03T12:00:00Z\n")
       expect(err).not_to include("assuming")
+    end
+
+    it "discloses a bare time that shares its line with a dated one" do
+      _, err, = Open3.capture3(
+        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", stdin_data: "2026-04-03T12:00:00Z then 15:30\n"
+      )
+      expect(err).to include("implicit, from $TZ")
+      expect(err).to include("no -d given")
     end
 
     it "says nothing about assumptions it did not make" do

@@ -74,6 +74,10 @@ echo '15:30 UTC' | tztr -t Mars/Phobos
 - 12-hour: `11:30 PM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`
 - Fractional seconds: `2026-04-03T12:00:00.123Z`
 
+Input is plain text, so JSON and NDJSON work too. Every timestamp on a line
+converts, whatever its format, and everything around it, including quotes,
+passes through untouched.
+
 Zone abbreviations inside text are recognized in uppercase (`PST`) or
 lowercase (`pst`), but not mixed case. Six are uppercase only, because
 their lowercase spellings are ordinary words that can follow a time:

@@ -59,6 +59,11 @@ module Tztr
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b/,
   ].freeze
 
+  # One pass over the line: at each position the alternatives are tried in the
+  # order above, so a longer format wins over a shorter one inside it, and every
+  # timestamp on the line converts whatever its format.
+  TIMESTAMP = Regexp.union(PATTERNS)
+
   TIMEZONE_ALIASES = {
     # UTC
     'utc' => 'UTC', 'gmt' => 'UTC', 'z' => 'UTC',
@@ -170,19 +175,9 @@ module Tztr
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
-    result = scannable(line)
-
-    PATTERNS.each do |pattern|
-      next unless result.match?(pattern)
-
-      result.gsub!(pattern) do |match|
-        convert_match(match, from:, to:, format:, date:) || match
-      end
-
-      break result
+    scannable(line).gsub(TIMESTAMP) do |match|
+      convert_match(match, from:, to:, format:, date:) || match
     end
-
-    result
   end
 
   # Per-match structured analysis of a line. Returns an array of hashes, one
@@ -193,27 +188,16 @@ module Tztr
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
-    line = scannable(line)
-    results = []
-
-    PATTERNS.each do |pattern|
-      next unless line.match?(pattern)
-
-      line.scan(pattern) do |match|
-        info = {
-          # Patterns only ever match ASCII, whatever the rest of the line is.
-          original: match.force_encoding(Encoding::UTF_8),
-          detected_format: detect_format(match),
-          detected_tz: detect_zone(match),
-        }
-        info[:translated] = convert_match(match, from:, to:, format:, date:) unless detect
-        results << info
-      end
-
-      break
+    scannable(line).scan(TIMESTAMP).map do |match|
+      info = {
+        # Patterns only ever match ASCII, whatever the rest of the line is.
+        original: match.force_encoding(Encoding::UTF_8),
+        detected_format: detect_format(match),
+        detected_tz: detect_zone(match),
+      }
+      info[:translated] = convert_match(match, from:, to:, format:, date:) unless detect
+      info
     end
-
-    results
   end
 
   # Which assumptions a line's timestamps force on us, for -v to disclose.
@@ -221,11 +205,7 @@ module Tztr
   # whether or not it names its own; without a zone as well, the source zone
   # comes from $TZ too.
   def assumptions(line)
-    line = scannable(line)
-    pattern = PATTERNS.find { |p| line.match?(p) }
-    return [] unless pattern
-
-    dateless = line.scan(pattern).select { |match| detect_format(match) == 'time' }
+    dateless = scannable(line).scan(TIMESTAMP).select { |match| detect_format(match) == 'time' }
     return [] if dateless.empty?
     return %i[date zone] if dateless.any? { |match| detect_zone(match).nil? }
 

@@ -145,6 +145,13 @@ CORE_LINES = [
   "à 15:30 cet après-midi",
   "um 15:30 ist es",
   "15:30 et al",
+
+  # --- several formats on one line: every one converts
+  %q({"ts":"2026-04-03T12:00:00Z","created":"2026-04-03 13:00:00 UTC","msg":"at 15:30 UTC"}),
+  "15:30 UTC then 2026-04-03T12:00:00Z",
+  "2026-04-03T12:00:00 and 2026-04-03 12:00:00 and 12:00",
+  "3:45 PM PST, 2026-04-03T12:00:00+05:30, 15:30 JST, 09:00",
+  "2026-04-03T12:00:00Z took 0:05",
 ].freeze
 
 CORE_ARGS = [
