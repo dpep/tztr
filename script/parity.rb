@@ -129,6 +129,22 @@ CORE_LINES = [
   "2026-04-03 03:45:00 PM",
   "3:45 PM PST",
   "11:30 p.m.",
+  "at 11:30 A.M. sharp",
+  "3:45 P.M. PST",
+  "11:30 a.m",
+  "It starts at 11:30 PM.",
+
+  # --- lowercase abbreviations: resolved like uppercase, unless also a word
+  "15:30 utc",
+  "3:45 pm pst",
+  "12:00 pdt",
+  "15:30 jst",
+  "2026-04-03 12:00:00 cest",
+  "15:30 Pst",
+  "à 15:30 est annulée",
+  "à 15:30 cet après-midi",
+  "um 15:30 ist es",
+  "15:30 et al",
 ].freeze
 
 CORE_ARGS = [
@@ -344,6 +360,9 @@ LOG_B = "2026-04-03 12:00:00 PST build\n11:30:00 PM deploy\n"
   [["-t", "sf", "empty.log"],      { "empty.log" => "" }],
   [["-t", "sf", "missing.log"],    {}],
   [["-t", "sf", "a.log", "missing.log"], { "a.log" => LOG_A }],
+  # a bad operand in the middle: the rest still run, exit 1
+  [["-t", "sf", "a.log", "missing.log", "b.log"], { "a.log" => LOG_A, "b.log" => LOG_B }],
+  [["-t", "sf", "-j", "a.log", "missing.log", "b.log"], { "a.log" => LOG_A, "b.log" => LOG_B }],
   [["-t", "sf", "--", "a.log"],    { "a.log" => LOG_A }],
   [["-v", "-t", "sf", "a.log"],    { "a.log" => LOG_A }],
 ].each { |args, files| add(group: "files", args: args, files: files) }
@@ -360,6 +379,7 @@ add(group: "files", args: ["-i", "-t", "sf", "adir"], dirs: ["adir"])
   ["--in-place", "--to", "sf", "a.log"],
   ["-i", "-t", "sf", "empty.log"],
   ["-i", "-t", "sf", "missing.log"],
+  ["-i", "-t", "sf", "a.log", "missing.log", "b.log"],
   ["-i", "-t", "sf"],               # -i with no file argument
   ["-i", "-j", "a.log"],            # mutually exclusive
   ["-i", "--ndjson", "a.log"],

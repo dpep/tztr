@@ -27,6 +27,10 @@ echo '15:30 UTC' | tztr -t America/New_York
 tail -f app.log | tztr
 ```
 
+Several files are processed in order. A file that can't be read is reported
+and skipped, the rest still run (and with `-i`, are still rewritten), and
+the exit status is 1, as with `cat` and `sed -i`.
+
 ### Options
 
 ```
@@ -67,8 +71,14 @@ echo '15:30 UTC' | tztr -t Mars/Phobos
 - ISO 8601: `2026-04-03T12:00:00Z`, `2026-04-03T12:00:00+05:30`
 - Date + time: `2026-04-03 12:00:00 UTC`
 - Time only: `15:30 UTC`, `08:30:45 PDT`
-- 12-hour: `11:30 PM`, `3:45 p.m.`, `3:45 PM PST`
+- 12-hour: `11:30 PM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`
 - Fractional seconds: `2026-04-03T12:00:00.123Z`
+
+Zone abbreviations inside text are recognized in uppercase (`PST`) or
+lowercase (`pst`), but not mixed case. Six are uppercase only, because
+their lowercase spellings are ordinary words that can follow a time:
+`est`, `cet`, `et`, `ist`, `ut` and `z`. In `à 15:30 est annulée`, `est` is
+French for "is", not Eastern time.
 
 One dent in the format-preserving promise: a date paired with a 12-hour time
 and no seconds gains a seconds field it never had — `2026-04-03 3:45 PM`

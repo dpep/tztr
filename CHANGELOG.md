@@ -17,11 +17,12 @@ that relied on an unrecognized timezone quietly falling back to UTC.
 - `-j/--json` and `-J/--ndjson` structured output — `{original, detected_format, detected_tz, translated}` per match.
 - `--detect` reports the detected format and zone without converting.
 - `-d/--date` supplies a reference date for time-only inputs, so DST resolves against the right day. It takes `2026-01-15`, `2026/01/15`, `20260115`, `January 15, 2026`, `Jan 15 2026` or `15 January 2026` — month names full or exactly three letters — and validates the real calendar. Anything else is an error.
-- 12-hour times: `11:30:00 PM`, `12:30 AM`, `3:45 PM PST`. One rough edge: a date plus a 12-hour time with no seconds gains a seconds field, so `2026-04-03 3:45 PM` comes back as `2026-04-03 15:45:00 UTC`.
+- 12-hour times: `11:30:00 PM`, `12:30 AM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`. One rough edge: a date plus a 12-hour time with no seconds gains a seconds field, so `2026-04-03 3:45 PM` comes back as `2026-04-03 15:45:00 UTC`.
 
 #### Fixed
 
-- Zone abbreviations are matched against an explicit list instead of "any 2-4 uppercase letters". Log levels stay in the line (`15:30 INFO server started` keeps its `INFO`), and `JST`, `CET`, `AEST` and the rest now actually convert instead of being read as local time.
+- A file that can't be read no longer stops a multi-file run. It is reported, every other file is still processed, and the exit status is 1, as with `cat` and `sed -i`. With `-i` it used to leave the job half-done: files before the bad one rewritten, files after it untouched.
+- Zone abbreviations are matched against an explicit list instead of "any 2-4 uppercase letters". Log levels stay in the line (`15:30 INFO server started` keeps its `INFO`), and `JST`, `CET`, `AEST` and the rest now actually convert instead of being read as local time. Lowercase spellings (`15:30 pst`) are recognized too, except `est`, `cet`, `et`, `ist`, `ut` and `z`, which are ordinary words that can follow a time.
 - An ambiguous wall clock in a repeated fall-back hour resolves to the earlier (daylight) occurrence, matching `date(1)`, Temporal, RFC 5545 and ICU.
 - `24:00` and a leap-second `23:59:60` normalize; impossible calendar dates (`2026-02-30`) are left exactly as found instead of being rewritten to a different day.
 - Lines that aren't valid UTF-8 keep their bytes, in every output mode including `-i`.

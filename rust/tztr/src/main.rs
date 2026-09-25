@@ -62,9 +62,10 @@ struct Options {
     files: Vec<String>,
 }
 
-/// An error about one of our inputs names it. A broken pipe is about stdout and
-/// stdin has no name, so neither is about an input file: both fall through to
-/// the bare form.
+/// An error about one of our inputs names it, and the run carries on with the
+/// rest, as cat and sed -i do — stopping would leave -i half-applied. A broken
+/// pipe is about stdout and stdin has no name, so neither is about an input
+/// file: both fall through to the bare form.
 fn file_error(file: &str, e: io::Error) -> String {
     if e.kind() == io::ErrorKind::BrokenPipe {
         e.to_string()
@@ -280,27 +281,35 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
         return Err("-i requires a file argument".to_string());
     }
     let mut disclosed = Assumptions::default();
+    let mut failed = false;
     for file in &opts.files {
-        let named = |e| file_error(file, e);
-        let content = fs::read(file).map_err(named)?;
-        let mut translated: Vec<u8> = Vec::with_capacity(content.len());
-        for line in content.split_inclusive(|b| *b == b'\n') {
-            // -i rewrites the file on the strength of these assumptions, so it
-            // has more reason to state them, not less.
-            disclose(opts, line, &mut disclosed);
-            translated.extend_from_slice(&translate_bytes(
-                line,
-                &opts.to,
-                opts.from.as_deref(),
-                opts.format,
-                opts.date.as_deref(),
-            ));
-        }
-        if translated != content {
-            fs::write(file, translated).map_err(named)?;
+        if let Err(e) = edit_in_place(opts, file, &mut disclosed) {
+            eprintln!("tztr: {}", file_error(file, e));
+            failed = true;
         }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(exit_code(failed))
+}
+
+fn edit_in_place(opts: &Options, file: &str, disclosed: &mut Assumptions) -> io::Result<()> {
+    let content = fs::read(file)?;
+    let mut translated: Vec<u8> = Vec::with_capacity(content.len());
+    for line in content.split_inclusive(|b| *b == b'\n') {
+        // -i rewrites the file on the strength of these assumptions, so it
+        // has more reason to state them, not less.
+        disclose(opts, line, disclosed);
+        translated.extend_from_slice(&translate_bytes(
+            line,
+            &opts.to,
+            opts.from.as_deref(),
+            opts.format,
+            opts.date.as_deref(),
+        ));
+    }
+    if translated != content {
+        fs::write(file, translated)?;
+    }
+    Ok(())
 }
 
 /// What the line loop carries between lines: where output goes, the `-j` buffer
@@ -320,6 +329,7 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
         disclosed: Assumptions::default(),
     };
 
+    let mut failed = false;
     (|| -> Result<(), String> {
         if opts.files.is_empty() {
             let stdin = io::stdin();
@@ -329,12 +339,20 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
             .map_err(|e| e.to_string())?;
         } else {
             for file in &opts.files {
-                let named = |e| file_error(file, e);
-                let f = fs::File::open(file).map_err(named)?;
-                for_each_line(BufReader::new(f), |line| {
-                    handle_line(opts, json_mode, line, &mut sink)
-                })
-                .map_err(named)?;
+                let result = fs::File::open(file).and_then(|f| {
+                    for_each_line(BufReader::new(f), |line| {
+                        handle_line(opts, json_mode, line, &mut sink)
+                    })
+                });
+                match result {
+                    Ok(()) => {}
+                    // stdout is gone; no later file can be written either.
+                    Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Err(e.to_string()),
+                    Err(e) => {
+                        eprintln!("tztr: {}", file_error(file, e));
+                        failed = true;
+                    }
+                }
             }
         }
         if opts.json {
@@ -350,7 +368,16 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
         Ok(())
     })()?;
 
-    Ok(ExitCode::SUCCESS)
+    Ok(exit_code(failed))
+}
+
+/// Every file was attempted; any that failed was already reported.
+fn exit_code(failed: bool) -> ExitCode {
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Say out loud what a bare timestamp forced us to assume: the source zone,

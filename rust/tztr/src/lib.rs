@@ -49,13 +49,27 @@ pub const ZONE_ABBREVIATIONS: &[&str] = &[
     "PT", "UT", "UTC", "Z",
 ];
 
-/// [`ZONE_ABBREVIATIONS`] as a regex alternation, longest token first — the
-/// regex crate's alternation is leftmost-*first*, so `UT` ahead of `UTC` would
-/// clip the trailing `C` off and orphan it in the output.
+/// Abbreviations whose lowercase spelling is also a word likely to follow a
+/// time — French "est"/"cet"/"et", German "ist" — so "à 15:30 est annulée" is
+/// left alone. Mirrors `Tztr::WORD_ABBREVIATIONS`.
+const WORD_ABBREVIATIONS: &[&str] = &["EST", "CET", "ET", "IST", "UT", "Z"];
+
+/// [`ZONE_ABBREVIATIONS`] as a regex alternation: uppercase, or wholly
+/// lowercase unless that is also a word, never mixed case. Longest token first
+/// — the regex crate's alternation is leftmost-*first*, so `UT` ahead of `UTC`
+/// would clip the trailing `C` off and orphan it in the output.
 fn zone_alternation() -> &'static str {
     static ALT: OnceLock<String> = OnceLock::new();
     ALT.get_or_init(|| {
-        let mut tokens = ZONE_ABBREVIATIONS.to_vec();
+        let lowercase = ZONE_ABBREVIATIONS
+            .iter()
+            .filter(|t| !WORD_ABBREVIATIONS.contains(t))
+            .map(|t| t.to_lowercase());
+        let mut tokens: Vec<String> = ZONE_ABBREVIATIONS
+            .iter()
+            .map(|t| t.to_string())
+            .chain(lowercase)
+            .collect();
         tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
         tokens.join("|")
     })
@@ -92,8 +106,10 @@ fn patterns() -> &'static [BytesRegex] {
             let tz = format!(r"(?:(?:{zone})\b|[+-]\d{{4}}\b)");
             // Seconds and fractional seconds, both optional.
             let secs = r"(?::\d{2}(?:\.\d+)?)?";
-            // A meridiem, optionally followed by a zone ("3:45 PM PST").
-            let mer = format!(r" ?[AaPp]\.?[Mm]\.?\b(?: ?{tz})?");
+            // A meridiem, optionally followed by a zone ("3:45 PM PST"). A
+            // dotted one takes its closing dot; an undotted one leaves a
+            // following full stop to the sentence.
+            let mer = format!(r" ?[AaPp](?:\.[Mm]\.|\.?[Mm]\b)(?: ?{tz})?");
             [
                 // ISO 8601 with Z or offset
                 r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})".to_string(),
@@ -1055,9 +1071,7 @@ mod tests {
     #[test]
     fn a_twelve_hour_time_may_carry_a_zone() {
         assert_eq!(tr("3:45 PM PST", "UTC"), "23:45 UTC");
-        // The meridiem is case-insensitive; zone abbreviations are not, so a
-        // lowercase `pst` is ordinary text and is left where it is.
-        assert_eq!(tr("3:45 pm pst", "UTC"), "15:45 UTC pst");
+        assert_eq!(tr("3:45 pm pst", "UTC"), "23:45 UTC");
         assert_eq!(
             tr("2026-04-03 03:45:00 PM PST", "UTC"),
             "2026-04-03 23:45:00 UTC"
@@ -1077,9 +1091,43 @@ mod tests {
     fn meridiem_dots_are_stripped_not_parsed() {
         // Ruby's Time.parse reads a bare `P` as military zone P (-03:00), so
         // the dots have to come off before the hour is folded.
-        assert_eq!(tr("11:30 p.m.", "UTC"), "23:30 UTC.");
+        assert_eq!(tr("11:30 p.m.", "UTC"), "23:30 UTC");
         assert_eq!(tr("11:30 P.M", "UTC"), "23:30 UTC");
-        assert_eq!(tr("11:30 A.M.", "UTC"), "11:30 UTC.");
+        assert_eq!(tr("at 11:30 A.M. sharp", "UTC"), "at 11:30 UTC sharp");
+        assert_eq!(tr("3:45 P.M. PST", "UTC"), "23:45 UTC");
+    }
+
+    #[test]
+    fn an_undotted_meridiem_leaves_the_full_stop_to_the_sentence() {
+        assert_eq!(
+            tr("It starts at 11:30 PM.", "UTC"),
+            "It starts at 23:30 UTC."
+        );
+    }
+
+    #[test]
+    fn a_lowercase_abbreviation_resolves_as_the_uppercase_one() {
+        assert_eq!(tr("15:30 jst", "UTC"), "06:30 UTC");
+        // pdt is a fixed -07:00 like PDT, even in January.
+        assert_eq!(
+            translate("12:00 pdt", "UTC", None, None, Some("2026-01-15")),
+            "19:00 UTC"
+        );
+        let m = matches("12:00 pst", "UTC", None, None, true, None);
+        assert_eq!(m[0].detected_tz.as_deref(), Some("pst"));
+    }
+
+    #[test]
+    fn a_lowercase_abbreviation_that_is_also_a_word_is_left_alone() {
+        // French "is" / "this", German "is": reading them as zones is a
+        // silent wrong answer.
+        assert_eq!(tr("à 15:30 est annulée", "UTC"), "à 15:30 UTC est annulée");
+        assert_eq!(
+            tr("à 15:30 cet après-midi", "UTC"),
+            "à 15:30 UTC cet après-midi"
+        );
+        assert_eq!(tr("um 15:30 ist es", "UTC"), "um 15:30 UTC ist es");
+        assert_eq!(tr("15:30 Pst", "UTC"), "15:30 UTC Pst");
     }
 
     #[test]

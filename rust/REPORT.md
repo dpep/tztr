@@ -34,6 +34,11 @@ natively (`UT UTC GMT` plus E/C/M/P × ST/DT) and the abbreviation-shaped keys o
 AEST AEDT NZST NZDT`). City nicknames (`sf`, `nyc`) are deliberately absent:
 they are `-t`/`-f` values, not things to look for inside text.
 
+Each is matched uppercase, or wholly lowercase unless the lowercase spelling
+is a word likely to follow a time (`WORD_ABBREVIATIONS`: French `est`/`cet`/`et`,
+German `ist`, plus `ut` and `z`). Mixed case never matches. A lowercase match
+resolves exactly as its uppercase form: `pst` is a fixed −08:00 like `PST`.
+
 How a detected abbreviation resolves depends on which half it came from:
 
 - The native ones are **fixed offsets** — `PST` is always −08:00, whatever the

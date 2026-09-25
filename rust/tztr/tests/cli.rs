@@ -530,6 +530,39 @@ fn an_error_about_a_file_names_the_file() {
 }
 
 #[test]
+fn a_bad_file_is_reported_and_the_rest_still_run() {
+    // As cat and sed -i do. Stopping at the bad file left -i half-applied.
+    let a = temp_path("tztr-continue-a");
+    let b = temp_path("tztr-continue-b");
+    let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+    for f in [a, b] {
+        std::fs::write(f, "2026-04-03T12:00:00Z\n").unwrap();
+    }
+
+    let o = run_tz(b"", &["-t", "pst", a, "/tmp", a], None);
+    assert!(!o.ok);
+    assert_eq!(o.out(), "2026-04-03T05:00:00-07:00\n".repeat(2));
+    assert_eq!(
+        o.stderr.trim_end(),
+        "tztr: /tmp: Is a directory (os error 21)"
+    );
+
+    let o = run_tz(b"", &["-i", "-t", "pst", a, "/tmp", b], None);
+    assert!(!o.ok);
+    assert_eq!(
+        o.stderr.trim_end(),
+        "tztr: /tmp: Is a directory (os error 21)"
+    );
+    for f in [a, b] {
+        assert_eq!(
+            std::fs::read_to_string(f).unwrap(),
+            "2026-04-03T05:00:00-07:00\n"
+        );
+        std::fs::remove_file(f).unwrap();
+    }
+}
+
+#[test]
 fn a_broken_pipe_is_not_blamed_on_the_input_file() {
     // `tztr big.log | head -1` is the commonest way this tool gets stopped.
     // EPIPE comes from writing to stdout — the input file was fine, and naming

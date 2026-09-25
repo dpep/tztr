@@ -160,13 +160,16 @@ disclose = lambda do |line|
   warn "#{parser.program_name}: no -d given, assuming #{Date.today.strftime('%Y-%m-%d')} for DST resolution" if assumed.include?(:date) && !options[:date]
 end
 
-# An error about one of our inputs names it. A broken pipe is about stdout and
-# stdin has no name, so neither is about an input file: both fall through to
-# the bare form below.
+# An error about one of our inputs names it, and the run carries on with the
+# rest, as cat and sed -i do -- stopping would leave -i half-applied. A broken
+# pipe is about stdout and stdin has no name, so neither is about an input
+# file: both fall through to the bare form below.
+failed = false
 file_error = lambda do |path, error|
   raise error if path.nil? || error.is_a?(Errno::EPIPE)
 
-  abort "#{parser.program_name}: #{path}: #{SystemCallError.new(error.errno).message} (os error #{error.errno})"
+  warn "#{parser.program_name}: #{path}: #{SystemCallError.new(error.errno).message} (os error #{error.errno})"
+  failed = true
 end
 
 $stdout.sync = true
@@ -223,6 +226,7 @@ begin
 
     puts JSON.pretty_generate(collected) if options[:json]
   end
+  exit 1 if failed
 rescue SystemCallError => e
   # Ruby's own message carries the syscall and path; the Rust port prints the
   # bare strerror, and the two must read the same.

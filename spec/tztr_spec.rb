@@ -123,6 +123,26 @@ RSpec.describe Tztr do
       expect(Tztr.matches("2026-04-03 12:00:00 ERROR db failed", detect: true))
         .to eq([{ original: "2026-04-03 12:00:00", detected_format: "datetime", detected_tz: nil }])
     end
+
+    it "detects a lowercase abbreviation, resolving it as the uppercase one" do
+      expect(Tztr.translate("15:30 utc", to: "America/New_York", date: "2026-01-15")).to eq("10:30 EST")
+      expect(Tztr.translate("3:45 pm pst", to: "UTC")).to eq("23:45 UTC")
+      expect(Tztr.translate("15:30 jst", to: "UTC")).to eq("06:30 UTC")
+      # pdt is a fixed -07:00 like PDT, even in January.
+      expect(Tztr.translate("12:00 pdt", to: "UTC", date: "2026-01-15")).to eq("19:00 UTC")
+      expect(Tztr.matches("12:00 pst", detect: true).first[:detected_tz]).to eq("pst")
+    end
+
+    it "leaves a lowercase abbreviation that is also a word alone" do
+      # French "is" / "this", German "is": reading them as zones is a silent wrong answer.
+      expect(Tztr.translate("à 15:30 est annulée", to: "UTC")).to eq("à 15:30 UTC est annulée")
+      expect(Tztr.translate("à 15:30 cet après-midi", to: "UTC")).to eq("à 15:30 UTC cet après-midi")
+      expect(Tztr.translate("um 15:30 ist es", to: "UTC")).to eq("um 15:30 UTC ist es")
+    end
+
+    it "does not detect a mixed-case abbreviation" do
+      expect(Tztr.translate("15:30 Pst", to: "UTC")).to eq("15:30 UTC Pst")
+    end
   end
 
   describe "12-hour times" do
@@ -142,8 +162,15 @@ RSpec.describe Tztr do
       expect(Tztr.translate("3:45 PM PST", to: "UTC")).to eq("23:45 UTC")
     end
 
-    it "accepts a dotted meridiem" do
-      expect(Tztr.translate("11:30 p.m.", to: "UTC")).to eq("23:30 UTC.")
+    it "consumes a dotted meridiem whole" do
+      expect(Tztr.translate("11:30 p.m.", to: "UTC")).to eq("23:30 UTC")
+      expect(Tztr.translate("at 11:30 A.M. sharp", to: "UTC")).to eq("at 11:30 UTC sharp")
+      expect(Tztr.translate("3:45 P.M. PST", to: "UTC")).to eq("23:45 UTC")
+      expect(Tztr.translate("11:30 a.m", to: "UTC")).to eq("11:30 UTC")
+    end
+
+    it "leaves a sentence's full stop after an undotted meridiem" do
+      expect(Tztr.translate("It starts at 11:30 PM.", to: "UTC")).to eq("It starts at 23:30 UTC.")
     end
   end
 
@@ -586,12 +613,12 @@ RSpec.describe Tztr do
       expect(run_fail("/tmp")).to eq("tztr: /tmp: Is a directory (os error 21)")
     end
 
-    it "emits earlier files before a later one fails" do
+    it "reports a bad file and carries on with the rest, like cat" do
       good = "/tmp/tztr-lazy-good.txt"
       File.write(good, "2026-04-03T12:00:00Z\n")
-      out, err, status = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "pst", good, "/tmp/tztr-nope.txt")
-      expect(status).not_to be_success
-      expect(out).to eq("2026-04-03T05:00:00-07:00\n")
+      out, err, status = Open3.capture3({ "TZ" => nil }, TZTR, "-t", "pst", good, "/tmp/tztr-nope.txt", good)
+      expect(status.exitstatus).to eq(1)
+      expect(out).to eq("2026-04-03T05:00:00-07:00\n" * 2)
       expect(err.chomp).to eq("tztr: /tmp/tztr-nope.txt: No such file or directory (os error 2)")
     ensure
       File.delete(good) if File.exist?(good)
@@ -600,6 +627,17 @@ RSpec.describe Tztr do
     it "names the file in an -i error too" do
       expect(run_fail("-i", "/tmp/tztr-does-not-exist.txt"))
         .to eq("tztr: /tmp/tztr-does-not-exist.txt: No such file or directory (os error 2)")
+    end
+
+    it "edits every good file in place when one argument is bad, like sed -i" do
+      a, b = "/tmp/tztr-inplace-a.txt", "/tmp/tztr-inplace-b.txt"
+      [a, b].each { |f| File.write(f, "2026-04-03T12:00:00Z\n") }
+      _, err, status = Open3.capture3({ "TZ" => nil }, TZTR, "-i", "-t", "pst", a, "/tmp", b)
+      expect(status.exitstatus).to eq(1)
+      expect(err.chomp).to eq("tztr: /tmp: Is a directory (os error 21)")
+      expect([a, b].map { |f| File.read(f) }).to all(eq("2026-04-03T05:00:00-07:00\n"))
+    ensure
+      [a, b].each { |f| File.delete(f) if File.exist?(f) }
     end
 
     it "rejects an abbreviated long option" do
