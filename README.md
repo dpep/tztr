@@ -72,6 +72,8 @@ echo '15:30 UTC' | tztr -t Mars/Phobos
 - Date + time: `2026-04-03 12:00:00 UTC`
 - Time only: `15:30 UTC`, `08:30:45 PDT`
 - 12-hour: `11:30 PM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`
+- Hour only, with AM/PM: `9am`, `9 PM PST`. A bare hour with no AM/PM is just a
+  number, except as the start of a range whose end has one (`9-9:15am`).
 - Fractional seconds: `2026-04-03T12:00:00.123Z`
 
 Input is plain text, so JSON and NDJSON work too. Every timestamp on a line
@@ -79,18 +81,40 @@ converts, whatever its format, and everything around it, including quotes,
 passes through untouched. One exception: a bare time like `0:05`, with no
 date, zone or AM/PM, is left alone when another timestamp on the same line
 names any of those, since it is most likely a duration (`...Z took 0:05`).
+The check only looks at the line itself: a duration alone on its line
+(`request took 0:05`) is indistinguishable from a time and converts as one.
 
-A range shares the zone and AM/PM written at its end. `from 3:30 to 4:45 PM PST`
-converts both ends as PST afternoon times, and `11:30 to 1:00 PM` starts in
-the morning. The two ends can be joined by `-`, `–`, `to`, `until` or `through`.
+A range or list shares the zone and AM/PM written at its end.
+`from 3:30 to 4:45 PM PST` converts both ends as PST afternoon times,
+`3:00, 4:00 or 5:00 PM PST` converts all three, and `11:30 to 1:00 PM` starts
+in the morning. A range is joined by `-`, `–`, `—`, `to`, `until`, `till`,
+`through` or `thru`; a list by commas, `or` and `and`. Any other word in
+between (`15:30, then 16:45 PST`) keeps the two apart. The zone travels from
+the end back to the start, never forward: in `3:30 PST to 4:45 PM`, the end
+takes your default zone.
+
 A time with a UTC offset needs seconds (`12:34:56-05:00`), so `15:30-16:45` is
 read as a range.
+
+When a range crosses midnight, the preserved format shows only the clock.
+`-F iso` shows the dates too:
+
+```bash
+echo '3:30 to 4:45 PM PST' | tztr -t utc -d 2026-04-03 -F iso
+# 2026-04-03 23:30:00Z to 2026-04-04 00:45:00Z
+```
 
 Zone abbreviations inside text are recognized in uppercase (`PST`) or
 lowercase (`pst`), but not mixed case. Six are uppercase only, because
 their lowercase spellings are ordinary words that can follow a time:
 `est`, `cet`, `et`, `ist`, `ut` and `z`. In `à 15:30 est annulée`, `est` is
-French for "is", not Eastern time.
+French for "is", not Eastern time. `-v` says when it passed over a mixed-case
+one:
+
+```bash
+echo '15:30 Pst' | tztr -v
+# tztr: ignored "Pst": a zone abbreviation is matched in all uppercase or all lowercase
+```
 
 One dent in the format-preserving promise: a date paired with a 12-hour time
 and no seconds gains a seconds field it never had — `2026-04-03 3:45 PM`
@@ -110,6 +134,19 @@ echo 'meeting at 15:30 UTC' | tztr -t pst -j
 #     "detected_tz": "UTC",
 #     "translated": "08:30 PDT"
 #   }
+# ]
+```
+
+A timestamp in a range or list also carries `group`, which lists every member
+in order, so the two ends of a range can be read together:
+
+```bash
+echo 'standup 9:00 to 9:15 AM PST' | tztr -t utc -j
+# [
+#   { "original": "9:00", "detected_tz": "PST", "translated": "17:00 UTC",
+#     "group": { "type": "range", "members": ["9:00", "9:15 AM PST"] }, ... },
+#   { "original": "9:15 AM PST", "detected_tz": "PST", "translated": "17:15 UTC",
+#     "group": { "type": "range", "members": ["9:00", "9:15 AM PST"] }, ... }
 # ]
 ```
 

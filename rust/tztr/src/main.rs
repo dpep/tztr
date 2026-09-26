@@ -10,8 +10,8 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
 use tztr::{
-    assumptions, matches_bytes, resolve_tz, timezone_aliases, today_in_zone, translate_bytes,
-    Assumptions, Format, Match,
+    assumptions, ignored_zones, matches_bytes, resolve_tz, timezone_aliases, today_in_zone,
+    translate_bytes, Assumptions, Format, Match,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -280,7 +280,7 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
     if opts.files.is_empty() {
         return Err("-i requires a file argument".to_string());
     }
-    let mut disclosed = Assumptions::default();
+    let mut disclosed = Disclosed::default();
     let mut failed = false;
     for file in &opts.files {
         if let Err(e) = edit_in_place(opts, file, &mut disclosed) {
@@ -291,7 +291,7 @@ fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
     Ok(exit_code(failed))
 }
 
-fn edit_in_place(opts: &Options, file: &str, disclosed: &mut Assumptions) -> io::Result<()> {
+fn edit_in_place(opts: &Options, file: &str, disclosed: &mut Disclosed) -> io::Result<()> {
     let content = fs::read(file)?;
     let mut translated: Vec<u8> = Vec::with_capacity(content.len());
     for line in content.split_inclusive(|b| *b == b'\n') {
@@ -318,7 +318,7 @@ fn edit_in_place(opts: &Options, file: &str, disclosed: &mut Assumptions) -> io:
 struct Sink<W: Write> {
     out: W,
     collected: Vec<Match>,
-    disclosed: Assumptions,
+    disclosed: Disclosed,
 }
 
 fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
@@ -326,7 +326,7 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
     let mut sink = Sink {
         out: stdout.lock(),
         collected: Vec::new(),
-        disclosed: Assumptions::default(),
+        disclosed: Disclosed::default(),
     };
 
     let mut failed = false;
@@ -388,15 +388,33 @@ fn exit_code(failed: bool) -> ExitCode {
 /// State whatever `line` assumes that no earlier line already did, so each
 /// assumption is heard once, the first time it is actually made. `disclosed`
 /// accumulates across the run.
-fn disclose(opts: &Options, line: &[u8], disclosed: &mut Assumptions) {
+/// What `-v` has already said, so each thing is said once.
+#[derive(Default)]
+struct Disclosed {
+    assumed: Assumptions,
+    ignored: Vec<String>,
+}
+
+fn disclose(opts: &Options, line: &[u8], disclosed: &mut Disclosed) {
     if !opts.verbose || opts.detect {
         return;
     }
-    let new = assumptions(line).minus(*disclosed);
+
+    // A zone the user wrote but we didn't read, because of its case (Pst).
+    for token in ignored_zones(line) {
+        if !disclosed.ignored.contains(&token) {
+            eprintln!(
+                "tztr: ignored \"{token}\": a zone abbreviation is matched in all uppercase or all lowercase"
+            );
+            disclosed.ignored.push(token);
+        }
+    }
+
+    let new = assumptions(line).minus(disclosed.assumed);
     if !new.any() {
         return;
     }
-    *disclosed = disclosed.union(new);
+    disclosed.assumed = disclosed.assumed.union(new);
 
     if new.zone {
         if let Some(from) = opts.from.as_deref().filter(|_| opts.from_is_implicit) {
@@ -511,6 +529,12 @@ fn json_value(m: &Match, detect: bool) -> Value {
         obj.insert(
             "translated".into(),
             m.translated.clone().map_or(Value::Null, Value::String),
+        );
+    }
+    if let Some(group) = &m.group {
+        obj.insert(
+            "group".into(),
+            json!({ "type": group.kind, "members": group.members }),
         );
     }
     Value::Object(obj)

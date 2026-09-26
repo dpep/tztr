@@ -56,6 +56,8 @@ module Tztr
     /\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?[+-](?:0\d|1[0-4]):?[0-5]\d\b/,
     # 12-hour time: 11:30 PM, 3:45 p.m., 3:45 PM PST
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{MERIDIEM}(?: ?#{ZONE})?/,
+    # Hour with a meridiem: 9am, 9 PM PST
+    /\b\d{1,2} ?#{MERIDIEM}(?: ?#{ZONE})?/,
     # Bare time: 12:34:56, 12:34
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b/,
   ].freeze
@@ -68,12 +70,19 @@ module Tztr
 
   # A time-only timestamp in pieces, for sharing a range's zone and meridiem.
   TIME_PARTS = /\A(?<clock>(?<hour>\d{1,2}):\d{2}(?::\d{2}(?:\.\d+)?)?)(?: ?(?<meridiem>#{MERIDIEM}))?(?: ?(?<zone>#{ZONE}))?\z/
-  # What joins the two ends of a range: 15:30-16:45, 3:30 to 4:45 PM.
-  RANGE_JOIN = /\A[ \t]*(?:-|–|—|to|until|till|through|thru)[ \t]*\z/i
+  RANGE_WORDS = '-|–|—|to|until|till|through|thru'
+  # What joins the ends of a range (15:30-16:45, 3:30 to 4:45 PM) or the items
+  # of a list (3:00, 4:00 or 5:00 PM).
+  RANGE_JOIN = /\A[ \t]*(?:#{RANGE_WORDS})[ \t]*\z/i
+  LIST_JOIN = /\A[ \t]*(?:,|(?:,[ \t]*)?(?:or|and))[ \t]*\z/i
+  # A bare hour starting a range, the 9 of "9-9:15am". Not after a letter,
+  # digit, colon or dot, so v1.9-10am stays put.
+  RANGE_HOUR = /(?:\A|[^0-9A-Za-z_:.])(?<hour>\d{1,2})[ \t]*(?:#{RANGE_WORDS})[ \t]*\z/i
 
-  # A timestamp found in a line: where it starts, its text, and what it is read
-  # as -- the text plus any zone or meridiem it shares as the start of a range.
-  Stamp = Data.define(:offset, :text, :effective)
+  # A timestamp found in a line: its byte offset, its text, what it is read as
+  # (the text plus any zone or meridiem it shares with the end of its range or
+  # list), and that range or list for -j.
+  Stamp = Data.define(:offset, :text, :effective, :group)
 
   TIMEZONE_ALIASES = {
     # UTC
@@ -187,15 +196,15 @@ module Tztr
     from = resolve_tz(from)
     ENV['TZ'] = to
     line = scannable(line)
-    out = line[0, 0]
+    out = line.byteslice(0, 0)
     pos = 0
 
     timestamps(line).each do |stamp|
-      out << line[pos...stamp.offset] << (convert_stamp(stamp, from:, to:, format:, date:) || stamp.text)
-      pos = stamp.offset + stamp.text.length
+      out << line.byteslice(pos, stamp.offset - pos) << (convert_stamp(stamp, from:, to:, format:, date:) || stamp.text)
+      pos = stamp.offset + stamp.text.bytesize
     end
 
-    out << line[pos..]
+    out << line.byteslice(pos, line.bytesize - pos)
   end
 
   # Per-match structured analysis of a line. Returns an array of hashes, one
@@ -214,8 +223,23 @@ module Tztr
         detected_tz: detect_zone(stamp.effective),
       }
       info[:translated] = convert_stamp(stamp, from:, to:, format:, date:) unless detect
+      info[:group] = stamp.group if stamp.group
       info
     end
+  end
+
+  # Zone abbreviations written right after a timestamp but not read as one
+  # because of their case (Pst), for -v to point out.
+  def ignored_zones(line)
+    line = scannable(line)
+    tokens = []
+    line.scan(TIMESTAMP) do
+      token = $~.post_match[/\A ?([A-Za-z]{2,4})\b/, 1]
+      next unless token && token != token.upcase && token != token.downcase
+
+      tokens << token if ZONE_ABBREVIATIONS.include?(token.upcase)
+    end
+    tokens.uniq
   end
 
   # Which assumptions a line's timestamps force on us, for -v to disclose.
@@ -234,26 +258,73 @@ module Tztr
   # date, zone or meridiem is most likely a duration ("took 0:05"), and is left
   # out: that zone belongs to the timestamp naming it.
   def timestamps(line)
-    stamps = []
-    line.scan(TIMESTAMP) { stamps << Stamp.new(offset: $~.begin(0), text: $~[0], effective: $~[0]) }
-    stamps = share_range_qualifiers(line, stamps)
-    return stamps if stamps.all? { |stamp| stamp.effective.match?(BARE_TIME) }
+    stamps = with_range_hours(line, scan_stamps(line))
+    joins = stamps.each_cons(2).map { |head, tail| join_between(line, head, tail) }
 
-    stamps.reject { |stamp| stamp.effective.match?(BARE_TIME) }
+    # Each item takes the zone and meridiem written after the one it joins:
+    # "3:30 to 4:45 PM PST" starts at 3:30 PM PST. Walked backwards, so a chain
+    # passes them all the way down.
+    (joins.length - 1).downto(0) do |i|
+      stamps[i] = stamps[i].with(effective: range_start(stamps[i].effective, stamps[i + 1].effective)) if joins[i]
+    end
+
+    group_ids = joins.reduce([0]) { |ids, join| ids << (join ? ids.last : ids.last + 1) }
+    kept = stamps.each_index.reject { |i| stamps[i].effective.match?(BARE_TIME) }
+    kept = stamps.each_index.to_a if kept.empty?
+
+    peers = kept.group_by { |i| group_ids[i] }
+    kept.map do |i|
+      members = peers[group_ids[i]]
+      next stamps[i] if members.size < 2
+
+      type = members[0...-1].all? { |m| joins[m] == :range } ? 'range' : 'list'
+      stamps[i].with(group: { type:, members: members.map { |m| stamps[m].text } })
+    end
   end
 
-  # The start of a range takes the zone and meridiem written after its end:
-  # "3:30 to 4:45 PM PST" starts at 3:30 PM PST. Walked backwards, so a chain of
-  # ranges passes them all the way down.
-  def share_range_qualifiers(line, stamps)
-    (stamps.length - 2).downto(0) do |i|
-      head, tail = stamps[i], stamps[i + 1]
-      gap = line[(head.offset + head.text.length)...tail.offset].dup.force_encoding(Encoding::UTF_8)
-      next unless gap.valid_encoding? && gap.match?(RANGE_JOIN)
-
-      stamps[i] = head.with(effective: range_start(head.text, tail.effective))
+  def scan_stamps(line)
+    stamps = []
+    line.scan(TIMESTAMP) do
+      offset, text = $~.byteoffset(0)[0], $~[0]
+      # An hour alone reads as its o'clock: 9am is 9:00am.
+      effective = text.match?(/\A\d{1,2} ?[AaPp]/) ? text.sub(/\A\d{1,2}/, '\0:00') : text
+      stamps << Stamp.new(offset:, text:, effective:, group: nil)
     end
     stamps
+  end
+
+  # A bare hour is only a time as the start of a range whose end has a
+  # meridiem: the 9 of "9-9:15am". Anywhere else it is just a number.
+  def with_range_hours(line, stamps)
+    prev_end = 0
+    stamps.flat_map do |stamp|
+      gap = text_between(line, prev_end, stamp.offset)
+      gap_start = prev_end
+      prev_end = stamp.offset + stamp.text.bytesize
+      next [stamp] unless stamp.effective.match(TIME_PARTS)&.[](:meridiem)
+
+      m = gap&.match(RANGE_HOUR)
+      next [stamp] unless m && (1..12).cover?(m[:hour].to_i)
+
+      head = Stamp.new(offset: gap_start + m.byteoffset(:hour)[0], text: m[:hour], effective: "#{m[:hour]}:00", group: nil)
+      [head, stamp]
+    end
+  end
+
+  # How two neighbouring time-only timestamps are joined: :range, :list or nil.
+  def join_between(line, head, tail)
+    return unless head.effective.match?(TIME_PARTS) && tail.effective.match?(TIME_PARTS)
+
+    gap = text_between(line, head.offset + head.text.bytesize, tail.offset)
+    if gap&.match?(RANGE_JOIN) then :range
+    elsif gap&.match?(LIST_JOIN) then :list
+    end
+  end
+
+  # The text between two byte offsets, or nil if it is not valid UTF-8.
+  def text_between(line, from, to)
+    text = line.byteslice(from, to - from).force_encoding(Encoding::UTF_8)
+    text if text.valid_encoding?
   end
 
   def range_start(head, tail)
@@ -277,7 +348,7 @@ module Tztr
   # Parsed as its effective reading, formatted to mirror what was written.
   def convert_stamp(stamp, from:, to:, format:, date:)
     time = parse(stamp.effective, from:, to:, date:)
-    format_time(time.localtime, format, stamp.text)
+    format_time(time.localtime, format, stamp.effective)
   rescue ArgumentError
     nil
   end

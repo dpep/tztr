@@ -407,6 +407,27 @@ fn verbose_stays_quiet_when_nothing_was_assumed() {
 }
 
 #[test]
+fn verbose_names_a_mixed_case_zone_it_ignored_once() {
+    let o = run_tz(b"15:30 Pst\n16:00 Pst\n", &["-v", "-d", "2026-04-03"], None);
+    assert_eq!(
+        o.stderr.matches(r#"ignored "Pst""#).count(),
+        1,
+        "{}",
+        o.stderr
+    );
+    assert!(o.stderr.contains(
+        r#"tztr: ignored "Pst": a zone abbreviation is matched in all uppercase or all lowercase"#
+    ));
+
+    let o = run_tz(
+        "à 15:30 est annulée\n".as_bytes(),
+        &["-v", "-d", "2026-04-03"],
+        None,
+    );
+    assert!(!o.stderr.contains("ignored"), "{}", o.stderr);
+}
+
+#[test]
 fn verbose_discloses_once_and_leaves_structured_stdout_clean() {
     let o = run_tz(
         b"15:30\n16:30\n17:30\n",

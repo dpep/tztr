@@ -14,15 +14,16 @@ that relied on an unrecognized timezone quietly falling back to UTC.
 
 #### Added
 
-- `-j/--json` and `-J/--ndjson` structured output — `{original, detected_format, detected_tz, translated}` per match.
+- `-j/--json` and `-J/--ndjson` structured output — `{original, detected_format, detected_tz, translated}` per match, plus `group: {type, members}` for a timestamp in a range or list.
 - `--detect` reports the detected format and zone without converting.
 - `-d/--date` supplies a reference date for time-only inputs, so DST resolves against the right day. It takes `2026-01-15`, `2026/01/15`, `20260115`, `January 15, 2026`, `Jan 15 2026` or `15 January 2026` — month names full or exactly three letters — and validates the real calendar. Anything else is an error.
-- 12-hour times: `11:30:00 PM`, `12:30 AM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`. One rough edge: a date plus a 12-hour time with no seconds gains a seconds field, so `2026-04-03 3:45 PM` comes back as `2026-04-03 15:45:00 UTC`.
+- Ranges and lists share the zone and AM/PM written at their end: `from 3:30 to 4:45 PM PST` and `3:00, 4:00 or 5:00 PM PST` convert every member. `11:30 to 1:00 PM` starts in the morning, and `9-9:15am` reads the bare `9` as the range's start. A range is joined by `-`, `–`, `—`, `to`, `until`, `till`, `through` or `thru`; a list by commas, `or` and `and`.
+- `-v` names a mixed-case zone it passed over (`15:30 Pst`).
+- 12-hour times: `11:30:00 PM`, `12:30 AM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`, and hours with AM/PM: `9am`, `9 PM PST`. One rough edge: a date plus a 12-hour time with no seconds gains a seconds field, so `2026-04-03 3:45 PM` comes back as `2026-04-03 15:45:00 UTC`.
 
 #### Fixed
 
 - Every timestamp on a line converts, whatever its format. Only the first format found used to convert, so in `{"ts":"2026-04-03T12:00:00Z","msg":"at 15:30 UTC"}` the `15:30 UTC` was left alone with no warning. A bare time with no date, zone or AM/PM is left alone when another timestamp on its line names a date, zone or AM/PM. It is most likely a duration, as in `2026-04-03T12:00:00Z took 0:05`.
-- The start of a range takes the zone and AM/PM written after its end: `from 3:30 to 4:45 PM PST` is 3:30 PM PST to 4:45 PM PST. The start takes the opposite AM/PM when the same one would run the range backwards (`11:30 to 1:00 PM` starts at 11:30 AM). A range can be joined by `-`, `–`, `—`, `to`, `until`, `till`, `through` or `thru`.
 - A time with a UTC offset must include seconds (`12:34:56-05:00`), with the offset within ±14 hours. `15:30-16:45 PST` used to be read as 15:30 at an offset of −16:45.
 - A file that can't be read no longer stops a multi-file run. It is reported, every other file is still processed, and the exit status is 1, as with `cat` and `sed -i`. With `-i` it used to leave the job half-done: files before the bad one rewritten, files after it untouched.
 - Zone abbreviations are matched against an explicit list instead of "any 2-4 uppercase letters". Log levels stay in the line (`15:30 INFO server started` keeps its `INFO`), and `JST`, `CET`, `AEST` and the rest now actually convert instead of being read as local time. Lowercase spellings (`15:30 pst`) are recognized too, except `est`, `cet`, `et`, `ist`, `ut` and `z`, which are ordinary words that can follow a time.

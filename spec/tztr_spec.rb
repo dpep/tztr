@@ -119,8 +119,52 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
         expect(result.map { |m| [m[:original], m[:detected_tz]] }).to eq([["3:30", "PST"], ["4:45 PM PST", "PST"]])
       end
 
-      it "only shares across a range, not a list" do
+      it "only shares across a range or list, not across other words" do
         expect(tr("15:30, then 16:45 PST")).to eq("15:30, then 00:45 UTC")
+      end
+
+      it "shares the trailing zone and meridiem across a list" do
+        expect(tr("Options at 3:00, 4:00 or 5:00 PM PST")).to eq("Options at 23:00 UTC, 00:00 UTC or 01:00 UTC")
+        expect(tr("at 3:00 and 4:00 PM")).to eq("at 22:00 UTC and 23:00 UTC")
+        expect(tr("11:00, 12:00, or 1:00 PM PST")).to eq("19:00 UTC, 20:00 UTC, or 21:00 UTC")
+      end
+
+      it "does not group a time with a dated timestamp" do
+        expect(Tztr.matches("2026-04-03T12:00:00Z,15:30", detect: true).map { |m| m.key?(:group) }).to eq([false])
+      end
+
+      it "lists every member of a range or list under -j" do
+        range = { type: "range", members: ["3:30", "4:45 PM PST"] }
+        expect(Tztr.matches("from 3:30 to 4:45 PM PST", detect: true).map { |m| m[:group] }).to eq([range, range])
+
+        list = { type: "list", members: ["3:00", "4:00", "5:00 PM"] }
+        expect(Tztr.matches("3:00, 4:00 or 5:00 PM", detect: true).map { |m| m[:group] }).to eq([list] * 3)
+
+        expect(Tztr.matches("15:30 UTC", detect: true).first).not_to have_key(:group)
+      end
+    end
+
+    describe "hour-only times" do
+      def tr(line) = Tztr.translate(line, to: "UTC", from: "America/Los_Angeles", date: "2026-04-03")
+
+      it "converts an hour with a meridiem" do
+        expect(tr("Meeting at 9am PST")).to eq("Meeting at 17:00 UTC")
+        expect(tr("at 9 PM")).to eq("at 04:00 UTC")
+        expect(tr("at 9 p.m. sharp")).to eq("at 04:00 UTC sharp")
+      end
+
+      it "reads a bare hour as the start of a range whose end has a meridiem" do
+        expect(tr("Standup 9-9:15am PST")).to eq("Standup 17:00 UTC-17:15 UTC")
+        expect(tr("9 to 10am PST")).to eq("17:00 UTC to 18:00 UTC")
+        expect(tr("11-1pm PST")).to eq("19:00 UTC-21:00 UTC")
+        expect(Tztr.matches("9-9:15am PST", detect: true).map { |m| m[:original] }).to eq(["9", "9:15am PST"])
+      end
+
+      it "leaves other bare numbers alone" do
+        expect(tr("won 3-10")).to eq("won 3-10")
+        expect(tr("page 9, 10am standup")).to eq("page 9, 17:00 UTC standup")
+        expect(tr("v1.9-10am")).to eq("v1.9-17:00 UTC")
+        expect(tr("item 42-10am")).to eq("item 42-17:00 UTC")
       end
     end
 
@@ -572,9 +616,10 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
 
     it "emits a JSON array with -j" do
       out = run("from 15:30 UTC to 16:45 UTC", "-t", "pst", "-j")
+      group = { "type" => "range", "members" => ["15:30 UTC", "16:45 UTC"] }
       expect(JSON.parse(out)).to eq([
-        { "original" => "15:30 UTC", "detected_format" => "time", "detected_tz" => "UTC", "translated" => "08:30 PDT" },
-        { "original" => "16:45 UTC", "detected_format" => "time", "detected_tz" => "UTC", "translated" => "09:45 PDT" },
+        { "original" => "15:30 UTC", "detected_format" => "time", "detected_tz" => "UTC", "translated" => "08:30 PDT", "group" => group },
+        { "original" => "16:45 UTC", "detected_format" => "time", "detected_tz" => "UTC", "translated" => "09:45 PDT", "group" => group },
       ])
     end
 
@@ -664,6 +709,17 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       )
       expect(err).not_to include("implicit")
       expect(err).not_to include("assuming")
+    end
+
+    it "says under -v when it ignored a mixed-case zone, once per spelling" do
+      _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-v", "-d", "2026-04-03", stdin_data: "15:30 Pst\n16:00 Pst\n")
+      expect(err.scan('ignored "Pst"').size).to eq(1)
+      expect(err).to include('tztr: ignored "Pst": a zone abbreviation is matched in all uppercase or all lowercase')
+    end
+
+    it "says nothing about a lowercase word it deliberately does not read as a zone" do
+      _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-v", "-d", "2026-04-03", stdin_data: "à 15:30 est annulée\n")
+      expect(err).not_to include("ignored")
     end
 
     it "says nothing about assumptions it did not make" do

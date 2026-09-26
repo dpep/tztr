@@ -152,6 +152,12 @@ end
 # against today. Say so, once, the first time it actually happens.
 disclosed = []
 disclose = lambda do |line|
+  # A zone the user wrote but we didn't read, because of its case (Pst).
+  (Tztr.ignored_zones(line) - disclosed).each do |token|
+    disclosed << token
+    warn %(#{parser.program_name}: ignored "#{token}": a zone abbreviation is matched in all uppercase or all lowercase)
+  end
+
   assumed = Tztr.assumptions(line) - disclosed
   return if assumed.empty?
 
