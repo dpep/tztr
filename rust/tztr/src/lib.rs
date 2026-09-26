@@ -844,7 +844,7 @@ pub fn matches_bytes(
             Match {
                 original: stamp.text.to_string(),
                 detected_format: detect_format(&reading(stamp.text)).to_string(),
-                detected_tz: detect_zone(&stamp.effective),
+                detected_tz: zone_token(&stamp.effective, from_tz.as_ref()),
                 translated,
                 group: stamp.group,
             }
@@ -906,16 +906,18 @@ impl Assumptions {
 }
 
 /// What converting `line` would have to assume. See [`Assumptions`].
-pub fn assumptions(line: &[u8]) -> Assumptions {
+pub fn assumptions(line: &[u8], from: Option<&str>) -> Assumptions {
+    let from_tz = from.map(resolve_zone);
+    let from_tz = from_tz.as_ref();
     // A timestamp left alone for its unknown zone assumes nothing.
     let readings: Vec<String> = timestamps(line, false)
         .into_iter()
         .map(|s| s.effective)
-        .filter(|s| unknown_zone(s).is_none())
+        .filter(|s| unknown_zone(s).is_none() || zone_token(s, from_tz).is_some())
         .collect();
     Assumptions {
         date: readings.iter().any(|s| time_only_re().is_match(s)),
-        zone: readings.iter().any(|s| detect_zone(s).is_none()),
+        zone: readings.iter().any(|s| zone_token(s, from_tz).is_none()),
     }
 }
 
@@ -952,9 +954,13 @@ fn unknown_zone_re() -> &'static Regex {
 
 /// Zone-shaped words a date(1) line carries that tztr doesn't know (EEST),
 /// for `-v` to name as the reason the line was left alone.
-pub fn unknown_zones(line: &[u8]) -> Vec<String> {
+pub fn unknown_zones(line: &[u8], from: Option<&str>) -> Vec<String> {
+    let from_tz = from.map(resolve_zone);
     let mut tokens: Vec<String> = Vec::new();
     for stamp in timestamps(line, false) {
+        if zone_token(&stamp.effective, from_tz.as_ref()).is_some() {
+            continue;
+        }
         if let Some(token) = unknown_zone(&stamp.effective) {
             if !tokens.contains(&token) {
                 tokens.push(token);
@@ -998,7 +1004,7 @@ fn components_re() -> &'static Regex {
     RE.get_or_init(|| {
         let zone = zone_alternation();
         Regex::new(&format!(
-            r"^(?:(?<y>[0-9]{{4}})-(?<mo>[0-9]{{2}})-(?<d>[0-9]{{2}})[T ])?(?<h>[0-9]{{1,2}}):(?<mi>[0-9]{{2}})(?::(?<s>[0-9]{{2}})(?:\.(?<frac>[0-9]+))?)?(?: ?(?<mer>[AaPp])\.?[Mm]\.?)?\s?(?<zone>{zone}|[+-][0-9]{{2}}:?[0-9]{{2}}|[+-][0-9]{{4}})?$",
+            r"^(?:(?<y>[0-9]{{4}})-(?<mo>[0-9]{{2}})-(?<d>[0-9]{{2}})[T ])?(?<h>[0-9]{{1,2}}):(?<mi>[0-9]{{2}})(?::(?<s>[0-9]{{2}})(?:\.(?<frac>[0-9]+))?)?(?: ?(?<mer>[AaPp])\.?[Mm]\.?)?\s?(?<zone>{zone}|[+-][0-9]{{2}}:?[0-9]{{2}}|[+-][0-9]{{4}}|[A-Za-z]{{2,5}})?$",
         ))
         .unwrap()
     })
@@ -1074,11 +1080,49 @@ fn anchor(zone_token: &str, from_tz: Option<&TimeZone>, to_tz: &TimeZone) -> Opt
     if zone_token.is_empty() {
         return Some(from_tz.unwrap_or(to_tz).clone());
     }
-    match zone_offset_seconds(zone_token) {
+    let offset = local_offset(zone_token, from_tz).or_else(|| zone_offset_seconds(zone_token));
+    match offset {
         Some(off) => Some(TimeZone::fixed(Offset::from_seconds(off).ok()?)),
         // ET, CT, MT, PT follow DST; resolve them as zones.
         None => abbrev_zone(zone_token),
     }
+}
+
+/// The abbreviations the source zone itself uses this year, with the offset
+/// each stands for there: in Shanghai `CST` is +08:00, not US Central. Read in
+/// that sense only when the source zone uses them; otherwise the table's
+/// (US-centric) meaning stands, so a Los Angeles or UTC source changes nothing.
+/// Mirrors `Tztr.local_abbreviations`.
+fn local_abbreviations(zone: &TimeZone) -> Vec<(String, i32)> {
+    let year = Zoned::now().with_time_zone(zone.clone()).year();
+    [1, 7]
+        .into_iter()
+        .filter_map(|month| {
+            let zoned = Date::new(year, month, 15)
+                .ok()?
+                .at(12, 0, 0, 0)
+                .to_zoned(zone.clone())
+                .ok()?;
+            let abbr = zoned.strftime("%Z").to_string().to_uppercase();
+            abbr.bytes()
+                .all(|b| b.is_ascii_uppercase())
+                .then(|| (abbr, zoned.offset().seconds()))
+        })
+        .collect()
+}
+
+fn local_offset(abbr: &str, from_tz: Option<&TimeZone>) -> Option<i32> {
+    let abbr = abbr.to_uppercase();
+    local_abbreviations(from_tz?)
+        .into_iter()
+        .find(|(a, _)| *a == abbr)
+        .map(|(_, off)| off)
+}
+
+/// The zone a reading carries: one tztr knows, or one it doesn't that the
+/// source zone uses (`EEST` in Helsinki). Mirrors `Tztr.zone_token`.
+fn zone_token(time: &str, from_tz: Option<&TimeZone>) -> Option<String> {
+    detect_zone(time).or_else(|| unknown_zone(time).filter(|t| local_offset(t, from_tz).is_some()))
 }
 
 /// The date `-v` says it assumed for this line's first dateless timestamp:
@@ -1089,7 +1133,7 @@ pub fn assumed_date(line: &[u8], from: Option<&str>, to: &str) -> Option<String>
         .find(|s| time_only_re().is_match(&s.effective))?;
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
-    let token = detect_zone(&stamp.effective).unwrap_or_default();
+    let token = zone_token(&stamp.effective, from_tz.as_ref()).unwrap_or_default();
     let (y, m, d) = today_in(&anchor(&token, from_tz.as_ref(), &to_tz)?);
     Some(format!("{y:04}-{m:02}-{d:02}"))
 }
@@ -1458,7 +1502,7 @@ mod tests {
             None,
         );
         assert_eq!(m.len(), 1);
-        let a = assumptions(b"2026-04-03T12:00:00Z took 0:05");
+        let a = assumptions(b"2026-04-03T12:00:00Z took 0:05", None);
         assert!(!a.date && !a.zone);
     }
 
@@ -1775,7 +1819,10 @@ mod tests {
             None,
         );
         assert_eq!(m[0].detected_tz, None);
-        assert_eq!(unknown_zones(b"Fri Sep 25 22:14:42 EEST 2026"), ["EEST"]);
+        assert_eq!(
+            unknown_zones(b"Fri Sep 25 22:14:42 EEST 2026", None),
+            ["EEST"]
+        );
     }
 
     #[test]
@@ -1934,6 +1981,64 @@ mod tests {
             hunt("cut at 01:02:03:04", "UTC", None, Some("2026-04-03")),
             "cut at 01:02:03:04"
         );
+    }
+
+    #[test]
+    fn an_abbreviation_the_source_zone_uses_reads_in_its_sense() {
+        let tr = |l, from, date| translate(l, "UTC", Some(from), None, date);
+        assert_eq!(
+            tr("12:00 CST", "Asia/Shanghai", Some("2026-01-15")),
+            "04:00 UTC"
+        );
+        assert_eq!(
+            tr("12:00 PST", "Asia/Manila", Some("2026-01-15")),
+            "04:00 UTC"
+        );
+        assert_eq!(
+            tr("12:00 IST", "Europe/Dublin", Some("2026-07-15")),
+            "11:00 UTC"
+        );
+        assert_eq!(
+            tr("12:00 IST", "Asia/Jerusalem", Some("2026-01-15")),
+            "10:00 UTC"
+        );
+        assert_eq!(
+            tr("Fri Sep 25 22:14:42 CST 2026", "Asia/Shanghai", None),
+            "Fri Sep 25 14:14:42 UTC 2026"
+        );
+        assert_eq!(
+            tr("Fri Sep 25 22:14:42 EEST 2026", "Europe/Helsinki", None),
+            "Fri Sep 25 19:14:42 UTC 2026"
+        );
+        assert_eq!(
+            tr("Fri Sep 25 22:14:42 EEST 2026", "America/Los_Angeles", None),
+            "Fri Sep 25 22:14:42 EEST 2026"
+        );
+        let m = matches(
+            "Fri Sep 25 22:14:42 EEST 2026",
+            "UTC",
+            Some("Europe/Helsinki"),
+            None,
+            true,
+            None,
+        );
+        assert_eq!(m[0].detected_tz.as_deref(), Some("EEST"));
+    }
+
+    #[test]
+    fn the_us_reading_stands_when_the_source_zone_does_not_use_it() {
+        for from in [
+            None,
+            Some("UTC"),
+            Some("America/Los_Angeles"),
+            Some("America/New_York"),
+            Some("Europe/London"),
+        ] {
+            let tr = |l| translate(l, "UTC", from, None, Some("2026-01-15"));
+            assert_eq!(tr("12:00 CST"), "18:00 UTC", "{from:?}");
+            assert_eq!(tr("12:00 PST"), "20:00 UTC", "{from:?}");
+            assert_eq!(tr("12:00 IST"), "06:30 UTC", "{from:?}");
+        }
     }
 
     #[test]

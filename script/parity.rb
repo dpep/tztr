@@ -776,6 +776,41 @@ UNKNOWN_DATE1_ZONES = %w[
   end
 end
 
+# With that zone as $TZ, every zone's own date(1) output converts, whatever
+# its abbreviation means elsewhere: Shanghai's CST, Manila's PST, Dublin's
+# IST, Helsinki's EEST.
+CONTEXT_DATE1_ZONES = KNOWN_DATE1_ZONES + UNKNOWN_DATE1_ZONES +
+                      %w[Asia/Shanghai Asia/Manila Europe/Dublin Asia/Jerusalem]
+[Time.utc(2026, 1, 15, 12, 0, 0), Time.utc(2026, 7, 15, 12, 0, 0)].each do |instant|
+  CONTEXT_DATE1_ZONES.each do |zone|
+    old = ENV["TZ"]
+    ENV["TZ"] = zone
+    local = instant.localtime.strftime(DATE1)
+    ENV["TZ"] = old
+    abbr = local.split[4]
+    utc = abbr.start_with?("+", "-") ? (abbr.size == 3 ? "+00" : "+0000") : "UTC"
+    expected = instant.strftime("%a %b %e %H:%M:%S #{utc} %Y")
+    add(group: "golden", args: ["-t", "utc"], stdin: "#{local}\n", tz: zone,
+        expect: lambda { |out, _err, code|
+          next if code.zero? && out == "#{expected}\n"
+
+          "TZ=#{zone} #{local.inspect}: expected #{expected.inspect}, got #{out.inspect}"
+        })
+  end
+end
+
+# The US reading of CST, PST and IST stands wherever $TZ doesn't use them.
+[:unset, "UTC", "America/Los_Angeles"].each do |tz|
+  { "12:00 CST" => "18:00 UTC", "12:00 PST" => "20:00 UTC", "12:00 IST" => "06:30 UTC" }.each do |line, expected|
+    add(group: "golden", args: ["-t", "utc", "-d", "2026-01-15"], stdin: "#{line}\n", tz: tz,
+        expect: lambda { |out, _err, code|
+          next if code.zero? && out == "#{expected}\n"
+
+          "TZ=#{tz} #{line.inspect}: expected #{expected.inspect}, got #{out.inspect}"
+        })
+  end
+end
+
 # Offset shapes and other fixes both builds could get wrong together.
 [
   ["2026-09-25 22:14:42-07:00",             "2026-09-26 05:14:42+00:00"],

@@ -155,10 +155,13 @@ echo '15:30 Pst' | tztr -v
 # tztr: ignored "Pst": a zone abbreviation is matched in all uppercase or all lowercase
 ```
 
-Some abbreviations mean different zones in different places. tztr reads each
-one a single way: `CST` as US Central, `PST` as US Pacific and `IST` as India.
-So `date` output from Shanghai, Manila, Dublin or Jerusalem converts wrong.
-Give it a numeric offset, or convert it from a tool that knows the zone.
+Some abbreviations mean different zones in different places. By default tztr
+reads them the US way (`CST` is US Central, `PST` US Pacific) and `IST` as
+India. When the source zone (`-f`, else `$TZ`) itself uses an abbreviation,
+tztr reads it in that zone's sense instead: with `TZ=Asia/Shanghai`, `CST` is
+China Standard Time, and with `TZ=Europe/Helsinki`, `date`'s `EEST` converts
+rather than being left as written. With `$TZ` unset, UTC, or anywhere in the
+US, nothing changes.
 
 An abbreviation that names standard or daylight time is that fixed offset,
 whatever the date: `CEST` is +02:00 even in January, `PST` is -08:00 even in

@@ -420,7 +420,7 @@ fn disclose(opts: &Options, line: &[u8], disclosed: &mut Disclosed) {
     }
 
     // A date(1) zone we don't know (EEST): the reason its line was left alone.
-    for token in unknown_zones(line) {
+    for token in unknown_zones(line, opts.from.as_deref()) {
         if !disclosed.ignored.contains(&token) {
             eprintln!("tztr: ignored \"{token}\": not a zone tztr knows");
             disclosed.ignored.push(token);
@@ -437,7 +437,7 @@ fn disclose(opts: &Options, line: &[u8], disclosed: &mut Disclosed) {
         }
     }
 
-    let new = assumptions(line).minus(disclosed.assumed);
+    let new = assumptions(line, opts.from.as_deref()).minus(disclosed.assumed);
     if !new.any() {
         return;
     }

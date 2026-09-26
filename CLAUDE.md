@@ -55,7 +55,7 @@ A few things that aren't obvious from a quick read:
 
 **A match's text and its reading differ.** Each match is a `Stamp` with the `text` it replaces and the `effective` reading it is parsed as (`Tztr.reading`): a named-month date (date(1), RFC 2822, CLF) normalized to `YYYY-MM-DD`, `9am` to `9:00am`, a slashed date dashed, a comma fraction dotted, plus whatever zone, meridiem or date it shares with its range. Parse the reading; format from the text, so the output keeps the input's shape.
 
-**Zones inside text are fixed offsets; zones given to `-f`/`-t` are IANA.** `CEST` in a line is always +02:00 (`ZONE_OFFSETS`), but `-t est` is New York with DST. Only the generic `ET`/`CT`/`MT`/`PT` follow DST inside text. A dateless timestamp's date is today *where it was written* (`today_where` in Ruby, `anchor` in Rust), never Time.parse's own guess.
+**Zones inside text are fixed offsets; zones given to `-f`/`-t` are IANA.** `CEST` in a line is always +02:00 (`ZONE_OFFSETS`), but `-t est` is New York with DST. Only the generic `ET`/`CT`/`MT`/`PT` follow DST inside text. An abbreviation the source zone itself uses this year wins over the table (`local_abbreviations`): `CST` under `TZ=Asia/Shanghai` is +08:00; under any zone that doesn't use it, the US-centric table stands. A dateless timestamp's date is today *where it was written* (`today_where` in Ruby, `anchor` in Rust), never Time.parse's own guess.
 
 **Timezone resolution has three layers** (`Tztr.resolve_tz`):
 1. Numeric offset string (e.g. `"-7"`) → `Etc/GMT±N` — note the POSIX sign inversion (`-7` becomes `Etc/GMT+7`).

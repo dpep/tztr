@@ -284,7 +284,7 @@ module Tztr
         # Patterns only ever match ASCII, whatever the rest of the line is.
         original: stamp.text.dup.force_encoding(Encoding::UTF_8),
         detected_format: detect_format(reading(stamp.text)),
-        detected_tz: detect_zone(stamp.effective),
+        detected_tz: zone_token(stamp.effective, from),
       }
       info[:translated] = convert_stamp(stamp, from:, to:, format:, date:) unless detect
       info[:group] = stamp.group if stamp.group
@@ -294,8 +294,8 @@ module Tztr
 
   # Zone-shaped words a date(1) line carries that tztr doesn't know (EEST),
   # for -v to name as the reason the line was left alone.
-  def unknown_zones(line)
-    timestamps(scannable(line)).filter_map { |stamp| unknown_zone(stamp.effective) }.uniq
+  def unknown_zones(line, from: nil)
+    timestamps(scannable(line)).filter_map { |stamp| unknown_zone(stamp.effective) unless zone_token(stamp.effective, from) }.uniq
   end
 
   # Zone abbreviations written right after a timestamp but not read as one
@@ -319,11 +319,11 @@ module Tztr
   # A timestamp with no date needs one to resolve DST in the *target* zone,
   # whether or not it names its own; without a zone as well, the source zone
   # comes from $TZ too.
-  def assumptions(line)
+  def assumptions(line, from: nil)
     # A timestamp left alone for its unknown zone assumes nothing.
-    readings = timestamps(scannable(line)).map(&:effective).reject { |time| unknown_zone(time) }
+    readings = timestamps(scannable(line)).map(&:effective).reject { |time| unknown_zone(time) && !zone_token(time, from) }
     [
-      (:zone if readings.any? { |time| detect_zone(time).nil? }),
+      (:zone if readings.any? { |time| zone_token(time, from).nil? }),
       (:date if readings.any? { |time| time_only?(time) }),
     ].compact
   end
@@ -495,19 +495,47 @@ module Tztr
   # Today where a dateless timestamp was written: in the zone it names, or else
   # the source zone. What -d stands in for, and what -v names when it is absent.
   def today_where(time, from, to)
-    abbr = detect_zone(time)&.upcase
-    offset = zone_offset(abbr)
+    abbr = zone_token(time, from)&.upcase
+    offset = zone_offset(abbr, from)
     return Time.now.getlocal(offset).to_date if offset
 
-    ENV['TZ'] = aliased_zone(abbr) || from || to
+    ENV['TZ'] = aliased_zone(abbr, from) || from || to
     today = Time.now.to_date
     ENV['TZ'] = to
     today
   end
 
-  # The fixed offset an abbreviation or numeric zone names, as +HH:MM.
-  def zone_offset(abbr)
+  # The abbreviations the source zone itself uses this year, with the offset
+  # each stands for there: in Shanghai CST is +08:00, not US Central. Read in
+  # that sense only when the source zone uses them; otherwise the table's
+  # (US-centric) meaning stands, so a Los Angeles or UTC source changes nothing.
+  def local_abbreviations(zone)
+    @local_abbreviations ||= {}
+    @local_abbreviations[zone] ||= begin
+      old = ENV['TZ']
+      ENV['TZ'] = zone
+      year = Time.now.year
+      seasons = [Time.local(year, 1, 15, 12), Time.local(year, 7, 15, 12)]
+      ENV['TZ'] = old
+      seasons.to_h { |t| [t.strftime('%Z').upcase, t.strftime('%:z')] }.select { |abbr, _| abbr.match?(/\A[A-Z]+\z/) }
+    end
+  end
+
+  def local_offset(abbr, from)
+    from && abbr && local_abbreviations(from)[abbr.upcase]
+  end
+
+  # The zone a reading carries: one tztr knows, or one it doesn't that the
+  # source zone uses (EEST in Helsinki).
+  def zone_token(time, from)
+    detect_zone(time) || unknown_zone(time)&.then { |token| token if local_offset(token, from) }
+  end
+
+  # The fixed offset an abbreviation or numeric zone names, as +HH:MM: in the
+  # source zone's sense if it uses it, else the table's.
+  def zone_offset(abbr, from = nil)
     return if abbr.nil?
+    return local_offset(abbr, from) if local_offset(abbr, from)
     return abbr.sub(/\A([+-]\d{2}):?(\d{2})?\z/) { "#{$1}:#{$2 || '00'}" } if abbr.match?(/\A[+-]\d{2}(?::?\d{2})?\z/)
 
     ZONE_OFFSETS[abbr]
@@ -556,7 +584,7 @@ module Tztr
 
     # A zone we can't resolve (a date(1) line's WIB): leave the text alone
     # rather than read it as local time.
-    raise ArgumentError, "unknown zone: #{unknown_zone(str)}" if unknown_zone(str)
+    raise ArgumentError, "unknown zone: #{unknown_zone(str)}" if unknown_zone(str) && !zone_token(str, from)
 
     # Time.parse accepts 99:14, and 22:14 AM, in some shapes; the Rust port
     # never does.
@@ -568,12 +596,12 @@ module Tztr
 
     # A fixed abbreviation becomes the offset it names, in whatever case it was
     # written, so Time.parse's own zone table never decides.
-    abbr = detect_zone(str)
-    if abbr&.match?(/\A[A-Za-z]+\z/) && (offset = zone_offset(abbr.upcase))
+    abbr = zone_token(str, from)
+    if abbr&.match?(/\A[A-Za-z]+\z/) && (offset = zone_offset(abbr.upcase, from))
       str = str.delete_suffix(abbr) + offset
       abbr = offset
     end
-    zone = aliased_zone(abbr&.upcase)
+    zone = aliased_zone(abbr&.upcase, from)
 
     if zone
       # Strip the abbreviation: left in place, Time.parse's own zone table
@@ -590,8 +618,8 @@ module Tztr
   end
 
   # The IANA zone a generic abbreviation (ET, PT) names; fixed ones have none.
-  def aliased_zone(abbr)
-    return if abbr.nil? || zone_offset(abbr)
+  def aliased_zone(abbr, from = nil)
+    return if abbr.nil? || zone_offset(abbr, from)
 
     TIMEZONE_ALIASES[abbr.downcase]
   end

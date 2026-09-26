@@ -440,6 +440,33 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
     end
   end
 
+  describe "abbreviations read in the source zone's context" do
+    def tr(line, from:, date: nil) = Tztr.translate(line, to: "UTC", from:, date:)
+
+    it "reads an abbreviation the source zone uses as that zone's" do
+      expect(tr("12:00 CST", from: "Asia/Shanghai", date: "2026-01-15")).to eq("04:00 UTC")
+      expect(tr("12:00 PST", from: "Asia/Manila", date: "2026-01-15")).to eq("04:00 UTC")
+      expect(tr("12:00 IST", from: "Europe/Dublin", date: "2026-07-15")).to eq("11:00 UTC")
+      expect(tr("12:00 IST", from: "Asia/Jerusalem", date: "2026-01-15")).to eq("10:00 UTC")
+      expect(tr("Fri Sep 25 22:14:42 CST 2026", from: "Asia/Shanghai")).to eq("Fri Sep 25 14:14:42 UTC 2026")
+    end
+
+    it "keeps the US reading when the source zone doesn't use the abbreviation" do
+      [nil, "UTC", "America/Los_Angeles", "America/New_York", "Europe/London"].each do |from|
+        expect(tr("12:00 CST", from:, date: "2026-01-15")).to eq("18:00 UTC"), from.inspect
+        expect(tr("12:00 PST", from:, date: "2026-01-15")).to eq("20:00 UTC"), from.inspect
+        expect(tr("12:00 IST", from:, date: "2026-01-15")).to eq("06:30 UTC"), from.inspect
+      end
+    end
+
+    it "resolves a date(1) zone it otherwise doesn't know when the source zone uses it" do
+      expect(tr("Fri Sep 25 22:14:42 EEST 2026", from: "Europe/Helsinki")).to eq("Fri Sep 25 19:14:42 UTC 2026")
+      expect(tr("Fri Sep 25 22:14:42 EEST 2026", from: "America/Los_Angeles")).to eq("Fri Sep 25 22:14:42 EEST 2026")
+      expect(Tztr.matches("Fri Sep 25 22:14:42 EEST 2026", from: "Europe/Helsinki", detect: true).first[:detected_tz])
+        .to eq("EEST")
+    end
+  end
+
   describe "durations" do
     it "leaves a time followed by a unit of duration alone" do
       expect(Tztr.translate("Finished in 1:05 minutes (files took 2.3 seconds to load)", to: "UTC"))
@@ -1022,6 +1049,16 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       it "can't be edited in place" do
         expect(run_fail("-i", "now")).to eq("tztr: -i cannot be combined with now")
       end
+    end
+
+    it "reads $TZ's own abbreviations in its own sense" do
+      expect(run("Fri Sep 25 22:14:42 CST 2026", "-t", "utc", env: { "TZ" => "Asia/Shanghai" }))
+        .to eq("Fri Sep 25 14:14:42 UTC 2026")
+      expect(run("Fri Sep 25 22:14:42 CST 2026", "-t", "utc", env: { "TZ" => "America/Los_Angeles" }))
+        .to eq("Sat Sep 26 04:14:42 UTC 2026")
+      _, err, = Open3.capture3({ "TZ" => "Europe/Helsinki" }, TZTR, "-v", "-t", "utc",
+                               stdin_data: "Fri Sep 25 22:14:42 EEST 2026\n")
+      expect(err).not_to include("ignored")
     end
 
     it "names a date(1) zone it could not resolve, and claims no assumption for it" do

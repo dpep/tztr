@@ -156,7 +156,7 @@ end
 disclosed = []
 disclose = lambda do |line|
   # A date(1) zone we don't know (EEST): the reason its line was left alone.
-  (Tztr.unknown_zones(line) - disclosed).each do |token|
+  (Tztr.unknown_zones(line, from: options[:from]) - disclosed).each do |token|
     disclosed << token
     warn %(#{parser.program_name}: ignored "#{token}": not a zone tztr knows)
   end
@@ -167,7 +167,7 @@ disclose = lambda do |line|
     warn %(#{parser.program_name}: ignored "#{token}": a zone abbreviation is matched in all uppercase or all lowercase)
   end
 
-  assumed = Tztr.assumptions(line) - disclosed
+  assumed = Tztr.assumptions(line, from: options[:from]) - disclosed
   return if assumed.empty?
 
   disclosed.concat(assumed)

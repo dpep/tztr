@@ -16,6 +16,7 @@ that relied on an unrecognized timezone quietly falling back to UTC.
 
 - `tztr now` prints the current time, as ISO 8601 in `-t`, else `$TZ`, else UTC. Every output flag works with it.
 - A dated clock with seconds takes a numeric offset, glued or spaced: `2026-09-25 22:14:42-07:00` (Python, `date --rfc-3339`), `2026-04-03 09:00:00-07` (Postgres). ISO 8601's comma fraction (`…T22:14:42,123456789-07:00`) and a no-break space before AM/PM (`3:45 PM`, as Chrome and macOS write it) are read too.
+- An abbreviation the source zone (`-f`, else `$TZ`) itself uses is read in that zone's sense: with `TZ=Asia/Shanghai`, `CST` is China Standard Time, and `date | tztr` works in Manila, Dublin, Jerusalem or Helsinki. Anywhere that doesn't use it, including unset, UTC and the US, the US reading stands.
 - More log formats, each converted date and all: nginx/Apache access logs (`[15/Jan/2015:12:31:01 -0700]`), slashed dates (`2026/09/25 23:14:42`, Go's log package and nginx's error log), `ls -lT` (`Sep 25 23:40:39 2026`), and glibc's locale forms of `date` (`Fri 25 Sep 2026 10:14:42 PM PDT`).
 - `-j/--json` and `-J/--ndjson` structured output — `{original, detected_format, detected_tz, translated}` per match, plus `group: {type, members}` for a timestamp in a range or list.
 - `--detect` reports the detected format and zone without converting.
