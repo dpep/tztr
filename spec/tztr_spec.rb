@@ -342,7 +342,7 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       expect(tr("staff 100 Sep 25 23:40:39 2026 file.txt", from: "Etc/GMT+7"))
         .to eq("staff 100 Sep 26 06:40:39 UTC 2026 file.txt")
       expect(tr("Fri Sep 25 23:40:39 -0700 2026")).to eq("Sat Sep 26 06:40:39 +0000 2026")
-      expect(tr("Fri Sep 25 22:14:42 +03 2026")).to eq("Fri Sep 25 19:14:42 +0000 2026")
+      expect(tr("Fri Sep 25 22:14:42 +03 2026")).to eq("Fri Sep 25 19:14:42 +00 2026")
     end
 
     it "converts glibc's locale forms of date(1)" do
@@ -365,6 +365,78 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       expect(tr("2026-09-25T22:14:42.123456789Z", to: "America/New_York")).to eq("2026-09-25T18:14:42.123456789-04:00")
       expect(tr("2026-09-25 22:14:42.5 UTC")).to eq("2026-09-25 22:14:42.5 UTC")
       expect(Tztr.translate("12:34:56.25 UTC", to: "UTC", date: "2026-04-03")).to eq("12:34:56.25 UTC")
+    end
+  end
+
+  describe "final-hunt fixes" do
+    def tr(line, to: "UTC", from: nil, date: nil) = Tztr.translate(line, to:, from:, date:)
+
+    it "does not read EEST as EST plus a letter" do
+      %w[EEST EET WEST WET ACST ACDT MET MEST HKST].each do |zone|
+        line = "Fri Sep 25 22:14:42 #{zone} 2026"
+        expect(tr(line)).to eq(line), zone
+      end
+      expect(tr("Fri 25 Sep 2026 10:14:42 PM EEST")).to eq("Fri 25 Sep 2026 10:14:42 PM EEST")
+      expect(Tztr.matches("Fri Sep 25 22:14:42 EEST 2026", detect: true).first[:detected_tz]).to be_nil
+      expect(tr("Fri Sep 25 22:14:42 ChST 2026")).to eq("Fri Sep 25 22:14:42 ChST 2026")
+    end
+
+    it "reads a numeric offset after a dated clock with seconds" do
+      expect(tr("2026-09-25 22:14:42-07:00")).to eq("2026-09-26 05:14:42+00:00")
+      expect(tr("created_at: 2026-01-15 09:00:00-05:00", to: "America/New_York"))
+        .to eq("created_at: 2026-01-15 09:00:00-05:00")
+      expect(tr("2026-09-25 22:14:42.123456789-07:00")).to eq("2026-09-26 05:14:42.123456789+00:00")
+      expect(tr("2026-09-25 09:00:00+05:30", to: "America/New_York")).to eq("2026-09-24 23:30:00-04:00")
+      expect(tr("2026-04-03 09:00:00-07")).to eq("2026-04-03 16:00:00+00")
+      expect(tr("2026-04-03 09:00:00 -0700")).to eq("2026-04-03 16:00:00 +0000")
+    end
+
+    it "reads a spaced colon offset after a bare clock, and an ISO comma fraction" do
+      expect(tr("12:00 +05:30", date: "2026-04-03")).to eq("06:30 UTC")
+      expect(tr("2026-09-25T22:14:42,123456789-07:00")).to eq("2026-09-26T05:14:42,123456789Z")
+    end
+
+    it "keeps a CSV column after the seconds" do
+      expect(tr("2026-04-03 12:00:00,200,OK", from: "UTC")).to eq("2026-04-03 12:00:00 UTC,200,OK")
+      expect(tr("2026-04-03 12:00:00,123 INFO", from: "UTC")).to eq("2026-04-03 12:00:00,123 UTC INFO")
+    end
+
+    it "keeps the date on a dated hour with a meridiem" do
+      expect(tr("2026-01-15 9am", to: "Europe/London", from: "UTC")).to eq("2026-01-15 09:00 GMT")
+      expect(tr("2026-04-03 11 PM - 12:30 AM", to: "Asia/Tokyo", from: "UTC"))
+        .to eq("2026-04-04 08:00 JST - 09:30 JST")
+    end
+
+    it "accepts a no-break space before AM/PM" do
+      expect(tr("3:45 PM", to: "America/New_York", from: "UTC", date: "2026-09-25")).to eq("11:45 EDT")
+      expect(tr("3:45 PM", to: "America/New_York", from: "UTC", date: "2026-09-25")).to eq("11:45 EDT")
+    end
+
+    it "leaves an hour past 12 with a meridiem alone" do
+      expect(tr("22:14 AM", date: "2026-04-03")).to eq("22:14 AM")
+      expect(tr("13:00 AM", date: "2026-04-03")).to eq("13:00 AM")
+      expect(tr("2026-04-03 22:14 AM")).to eq("2026-04-03 22:14 AM")
+    end
+
+    it "keeps at most nine fraction digits, as nanoseconds" do
+      expect(tr("2026-04-03 12:00:00.1234567891 UTC")).to eq("2026-04-03 12:00:00.123456789 UTC")
+    end
+
+    it "reads RFC 2822 with a meridiem and glibc dates without seconds or zone" do
+      expect(tr("Fri, 25 Sep 2026 10:14:42 PM PDT", to: "America/New_York")).to eq("Sat, 26 Sep 2026 01:14:42 AM EDT")
+      expect(tr("Fri 25 Sep 2026 22:14 PDT", to: "America/New_York")).to eq("Sat 26 Sep 2026 01:14 EDT")
+      expect(tr("Fri 25 Sep 2026 10:14:42 PM", from: "America/Los_Angeles", to: "America/New_York"))
+        .to eq("Sat 26 Sep 2026 01:14:42 AM EDT")
+    end
+
+    it "mirrors a single space before a one-digit day" do
+      expect(tr("Sat Sep 5 22:14:42 UTC 2026", to: "America/Los_Angeles")).to eq("Sat Sep 5 15:14:42 PDT 2026")
+      expect(tr("Sat Sep  5 22:14:42 UTC 2026", to: "America/Los_Angeles")).to eq("Sat Sep  5 15:14:42 PDT 2026")
+    end
+
+    it "leaves IPv6 addresses and SMPTE timecodes alone" do
+      expect(tr("fe80::1:23:45 up", date: "2026-04-03")).to eq("fe80::1:23:45 up")
+      expect(tr("cut at 01:02:03:04", date: "2026-04-03")).to eq("cut at 01:02:03:04")
     end
   end
 
@@ -950,6 +1022,12 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       it "can't be edited in place" do
         expect(run_fail("-i", "now")).to eq("tztr: -i cannot be combined with now")
       end
+    end
+
+    it "names a date(1) zone it could not resolve, and claims no assumption for it" do
+      _, err, = Open3.capture3({ "TZ" => "UTC" }, TZTR, "-v", stdin_data: "Fri Sep 25 22:14:42 EEST 2026\n")
+      expect(err).to include('tztr: ignored "EEST": not a zone tztr knows')
+      expect(err).not_to include("implicit")
     end
 
     it "says nothing about a capitalized word that happens to spell a zone" do

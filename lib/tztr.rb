@@ -35,7 +35,11 @@ module Tztr
   ABBREVIATION = Regexp.union(ZONE_SPELLINGS.sort_by { |abbr| [-abbr.length, abbr] })
   # A numeric offset within the -12..+14 real zones occupy.
   NUM_OFFSET = /[+-](?:0\d|1[0-3])[0-5]\d\b|[+-]1400\b/
+  COLON_OFFSET = /[+-](?:0\d|1[0-3]):[0-5]\d\b|[+-]14:00\b/
   ZONE = /(?:#{ABBREVIATION})\b|#{NUM_OFFSET}/
+  # After a dated clock's seconds, glued or not: -07:00, -0700, and the -07
+  # Postgres writes. Without seconds, 2026-04-03 9:00-10:00 is a range.
+  DATED_OFFSET = /[+-](?:(?:0\d|1[0-3]):?[0-5]\d|14:?00|0\d|1[0-4])\b/
 
   # The offset each abbreviation names. Standard and daylight ones are fixed
   # whatever the date -- CEST is +02:00 even in January -- as Time.parse reads
@@ -52,6 +56,8 @@ module Tztr
   # A dotted meridiem takes its closing dot; an undotted one leaves a
   # following full stop to the sentence.
   MERIDIEM = /[AaPp](?:\.[Mm]\.|\.?[Mm]\b)/
+  # Before a meridiem: a space, or the no-break spaces ICU writes (3:45 PM).
+  MERIDIEM_GAP = /[ \u00A0\u202F]?/
 
   DAY = /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)/
   MONTH_ABBRS = %w[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec].freeze
@@ -60,21 +66,23 @@ module Tztr
   # The zone a date(1)-shaped line may carry: any capitalized abbreviation --
   # one we can't resolve leaves the line alone rather than half-converted --
   # or a numeric one as tzdb writes it for zones without a name (+03).
-  DATE_ZONE = /(?:#{ABBREVIATION}|[A-Z]{2,5}|[+-]\d{2}(?:\d{2})?)/
+  DATE_ZONE = /(?:#{ABBREVIATION}|[A-Z][A-Za-z]?[A-Z]{1,3}|[+-]\d{2}(?:\d{2})?)/
   # A date, with dashes or slashes throughout (Go's log package, nginx).
   DATE = %r{\d{4}(?:-\d{2}-\d{2}|/\d{2}/\d{2})}
   # Seconds' fraction: any number of digits after a dot, or Python logging's
-  # comma and three.
+  # comma and three (checked again after the match: not before a CSV comma).
   FRAC = /(?:\.\d+|,\d{3}\b)/
+  # ISO 8601 allows a comma before any number of digits.
+  ISO_FRAC = /[.,]\d+/
 
   # Dates with named months, read whole so the weekday and day roll over with
   # the clock. date(1)/ctime: Fri Sep 25 22:14:42 PDT 2026, weekday and zone
   # optional (ls -lT has neither).
   UNIX_DATE = /\A(?<weekday>#{DAY} )?(?<mon>#{MON})  ?(?<day>\d{1,2}) (?<time>\S+) (?:(?<zone>\S+) )?(?<year>\d{4})\z/
   # RFC 2822 / HTTP: Fri, 25 Sep 2026 22:14:42 -0700
-  RFC_DATE = /\A(?<weekday>#{DAY}, )?(?<day>\d{1,2}) (?<mon>#{MON}) (?<year>\d{4}) (?<time>\S+) (?<zone>\S+)\z/
-  # glibc's locale date(1): Fri 25 Sep 2026 10:14:42 PM PDT
-  LOCALE_DATE = /\A#{DAY} (?<day>\d{1,2}) (?<mon>#{MON}) (?<year>\d{4}) (?<time>\S+)(?<mer> [AP]M)? (?<zone>\S+)\z/
+  RFC_DATE = /\A(?<weekday>#{DAY}, )?(?<day>\d{1,2}) (?<mon>#{MON}) (?<year>\d{4}) (?<time>\S+)(?<mer> [AP]M)? (?<zone>\S+)\z/
+  # glibc's locale date(1): Fri 25 Sep 2026 10:14:42 PM PDT, zone optional
+  LOCALE_DATE = /\A#{DAY} (?<day>\d{1,2}) (?<mon>#{MON}) (?<year>\d{4}) (?<time>\S+)(?<mer> [AP]M)?(?: (?<zone>\S+))?\z/
   # nginx/Apache access log: 15/Jan/2015:12:31:01 -0700
   CLF_DATE = %r{\A(?<day>\d{2})/(?<mon>#{MON})/(?<year>\d{4}):(?<time>\S+) (?<zone>\S+)\z}
   NAMED_DATES = [UNIX_DATE, RFC_DATE, LOCALE_DATE, CLF_DATE].freeze
@@ -83,31 +91,31 @@ module Tztr
     # nginx/Apache access log
     %r{\b\d{2}/#{MON}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4}\b},
     # glibc's locale date(1)
-    /\b#{DAY} \d{1,2} #{MON} \d{4} \d{1,2}:\d{2}:\d{2}(?: [AP]M)? #{DATE_ZONE}\b/,
+    /\b#{DAY} \d{1,2} #{MON} \d{4} \d{1,2}:\d{2}(?::\d{2})?(?: [AP]M)?(?: #{DATE_ZONE})?\b/,
     # date(1), ctime and ls -lT
     /\b(?:#{DAY} )?#{MON}  ?\d{1,2} \d{1,2}:\d{2}:\d{2} (?:#{DATE_ZONE} )?\d{4}\b/,
     # RFC 2822
-    /\b(?:#{DAY}, )?\d{1,2} #{MON} \d{4} \d{2}:\d{2}(?::\d{2})? (?:[+-]\d{4}\b|(?:#{ABBREVIATION})\b)/,
+    /\b(?:#{DAY}, )?\d{1,2} #{MON} \d{4} \d{1,2}:\d{2}(?::\d{2})?(?: [AP]M)? (?:[+-]\d{4}\b|(?:#{ABBREVIATION})\b)/,
     # ISO 8601 with Z or offset: 2026-04-03T12:34:56Z, 2026-04-03T12:34:56.123+00:00
-    /\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2}#{FRAC}?)?(?:Z|[+-]\d{2}:?\d{2})/,
+    /\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2}#{ISO_FRAC}?)?(?:Z|[+-]\d{2}:?\d{2})/,
     # ISO 8601 without timezone: 2026-04-03T12:34:56
-    /\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2}#{FRAC}?)?/,
-    # Date space 12-hour time: 2026-04-03 03:45:00 PM, 2026-04-03 03:45 PM PST
-    /#{DATE} \d{1,2}:\d{2}(?::\d{2}#{FRAC}?)? ?#{MERIDIEM}(?: ?#{ZONE})?/,
-    # Date space time with tz: 2026-04-03 12:34:56 UTC
-    /#{DATE} \d{1,2}:\d{2}(?::\d{2}#{FRAC}?)? ?#{ZONE}/,
+    /\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2}#{ISO_FRAC}?)?/,
+    # Date space 12-hour time: 2026-04-03 03:45:00 PM, 2026-04-03 03:45 PM PST, 2026-01-15 9am
+    /#{DATE} \d{1,2}(?::\d{2}(?::\d{2}#{FRAC}?)?)?#{MERIDIEM_GAP}#{MERIDIEM}(?: ?#{ZONE})?/,
+    # Date space time with tz: 2026-04-03 12:34:56 UTC, 2026-04-03 12:34:56-07:00
+    /#{DATE} \d{1,2}:\d{2}(?::\d{2}#{FRAC}? ?(?:#{DATED_OFFSET}|(?:#{ABBREVIATION})\b)| ?(?:#{ABBREVIATION})\b| (?:#{NUM_OFFSET}|#{COLON_OFFSET}))/,
     # Date space time: 2026-04-03 12:34:56, 2026/04/03 12:34:56
     /#{DATE} \d{1,2}:\d{2}(?::\d{2}#{FRAC}?)?/,
     # Time with tz: 12:34:56 UTC, 12:34 PST, 12:34 +0530. A numeric offset
     # glued to the clock needs seconds, or 15:30-1645 would read as one.
-    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)? ?#{ZONE}| ?(?:#{ABBREVIATION})\b| #{NUM_OFFSET})/,
+    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)? ?(?:#{ZONE}|#{COLON_OFFSET})| ?(?:#{ABBREVIATION})\b| (?:#{NUM_OFFSET}|#{COLON_OFFSET}))/,
     # Time with offset: 12:34:56+00:00. Seconds required and the offset in range,
     # so the hyphen of a range like 15:30-16:45 is not read as one.
     /\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?[+-](?:(?:0\d|1[0-3]):?[0-5]\d|14:?00)\b/,
     # 12-hour time: 11:30 PM, 3:45 p.m., 3:45 PM PST
-    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{MERIDIEM}(?: ?#{ZONE})?/,
+    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?#{MERIDIEM_GAP}#{MERIDIEM}(?: ?#{ZONE})?/,
     # Hour with a meridiem: 9am, 9 PM PST
-    /\b\d{1,2} ?#{MERIDIEM}(?: ?#{ZONE})?/,
+    /\b\d{1,2}#{MERIDIEM_GAP}#{MERIDIEM}(?: ?#{ZONE})?/,
     # Bare time: 12:34:56, 12:34
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b/,
   ].freeze
@@ -119,7 +127,7 @@ module Tztr
   BARE_TIME = /\A(?:#{PATTERNS.last})\z/
 
   # A time-only timestamp in pieces, for sharing a range's zone and meridiem.
-  TIME_PARTS = /\A(?<clock>(?<hour>\d{1,2}):\d{2}(?::\d{2}(?:\.\d+)?)?)(?: ?(?<meridiem>#{MERIDIEM}))?(?: ?(?<zone>#{ZONE}))?\z/
+  TIME_PARTS = /\A(?<clock>(?<hour>\d{1,2}):\d{2}(?::\d{2}(?:\.\d+)?)?)(?: ?(?<meridiem>#{MERIDIEM}))?(?: ?(?<zone>#{ZONE}|#{COLON_OFFSET}))?\z/
   RANGE_WORDS = '-|–|—|to|until|till|through|thru'
   # What joins the ends of a range (15:30-16:45, 3:30 to 4:45 PM) or the items
   # of a list (3:00, 4:00 or 5:00 PM).
@@ -284,6 +292,12 @@ module Tztr
     end
   end
 
+  # Zone-shaped words a date(1) line carries that tztr doesn't know (EEST),
+  # for -v to name as the reason the line was left alone.
+  def unknown_zones(line)
+    timestamps(scannable(line)).filter_map { |stamp| unknown_zone(stamp.effective) }.uniq
+  end
+
   # Zone abbreviations written right after a timestamp but not read as one
   # because of their case (Pst), for -v to point out.
   def ignored_zones(line)
@@ -306,7 +320,8 @@ module Tztr
   # whether or not it names its own; without a zone as well, the source zone
   # comes from $TZ too.
   def assumptions(line)
-    readings = timestamps(scannable(line)).map(&:effective)
+    # A timestamp left alone for its unknown zone assumes nothing.
+    readings = timestamps(scannable(line)).map(&:effective).reject { |time| unknown_zone(time) }
     [
       (:zone if readings.any? { |time| detect_zone(time).nil? }),
       (:date if readings.any? { |time| time_only?(time) }),
@@ -373,9 +388,14 @@ module Tztr
   def scan_stamps(line)
     stamps = []
     line.scan(TIMESTAMP) do
-      offset, text = $~.byteoffset(0)[0], $~[0]
-      next if text.match?(BARE_TIME) && $~.post_match.match?(DURATION_UNIT)
+      offset, text, before, after = $~.byteoffset(0)[0], $~[0], $~.pre_match[-1], $~.post_match
+      next if text.match?(BARE_TIME) && after.match?(DURATION_UNIT)
+      # A clock inside a longer run of colons: IPv6 (fe80::1:23:45), SMPTE
+      # timecodes (01:02:03:04).
+      next if text.match?(/\A\d{1,2}:/) && (before == ':' || after.match?(/\A:\d/))
 
+      # ,200 before another comma is a CSV column, not milliseconds.
+      text = text.delete_suffix(text[-4..]) if text.match?(/,\d{3}\z/) && !after.match?(/\A(?:[ \t\]]|\z)/)
       stamps << Stamp.new(offset:, text:, effective: reading(text), group: nil, days: 0)
     end
     stamps
@@ -385,16 +405,18 @@ module Tztr
   # alone as its o'clock (9am is 9:00am), a slashed date dashed and a comma
   # fraction dotted; anything else as written.
   def reading(text)
+    text = text.tr("\u00A0\u202F", '  ')
     if (m = NAMED_DATES.lazy.filter_map { |date| text.match(date) }.first)
       time = m[:time].count(':') == 1 ? "#{m[:time]}:00" : m[:time]
-      time += m[:mer] if m.names.include?('mer') && m[:mer]
+      time += m[:mer] if m.names.include?("mer") && m[:mer]
       zone = m[:zone]&.sub(/\A[+-]\d{2}\z/) { "#{_1}00" }
       date = format('%s-%02d-%02d', m[:year], MONTH_ABBRS.index(m[:mon]) + 1, m[:day].to_i)
       [date, time, zone].compact.join(' ')
-    elsif text.match?(/\A\d{1,2} ?[AaPp]/)
-      text.sub(/\A\d{1,2}/) { "#{_1}:00" }
     else
-      text.sub(%r{\A(\d{4})/(\d{2})/}) { "#{$1}-#{$2}-" }.sub(/(:\d{2}),(\d)/) { "#{$1}.#{$2}" }
+      text.sub(%r{\A(\d{4})/(\d{2})/}) { "#{$1}-#{$2}-" }
+          .sub(/(:\d{2}),(\d)/) { "#{$1}.#{$2}" }
+          .sub(/\A(\S+ )?(\d{1,2})(?= ?[AaPp])/) { "#{$1}#{$2}:00" }
+          .sub(/(\d)([+-]\d{2})\z/) { "#{$1}#{$2}:00" }
     end
   end
 
@@ -486,7 +508,7 @@ module Tztr
   # The fixed offset an abbreviation or numeric zone names, as +HH:MM.
   def zone_offset(abbr)
     return if abbr.nil?
-    return abbr.sub(/\A([+-]\d{2}):?(\d{2})\z/, '\1:\2') if abbr.match?(/\A[+-]\d{2}:?\d{2}\z/)
+    return abbr.sub(/\A([+-]\d{2}):?(\d{2})?\z/) { "#{$1}:#{$2 || '00'}" } if abbr.match?(/\A[+-]\d{2}(?::?\d{2})?\z/)
 
     ZONE_OFFSETS[abbr]
   end
@@ -507,9 +529,18 @@ module Tztr
     end
   end
 
+  # The zone a reading ends with. It must start the text or follow a space or
+  # digit: EEST is not EST with an E in front.
   def detect_zone(str)
-    m = str.match(/ ?(#{ABBREVIATION}|[+-]\d{2}:?\d{2})\z/)
+    m = str.match(/(?:\A|[ \d])(#{ABBREVIATION}|[+-]\d{2}(?::?\d{2})?)\z/)
     m && m[1]
+  end
+
+  # A zone-shaped word a reading ends with that isn't one tztr knows (EEST,
+  # WIB): the timestamp is left as written, and -v says why.
+  def unknown_zone(time)
+    token = time[/ ([A-Za-z]{2,5})\z/, 1]
+    token if token && !token.match?(/\A[AaPp][Mm]\z/) && !detect_zone(time)
   end
 
   def parse(str, from: nil, to: 'UTC', date: nil)
@@ -525,12 +556,13 @@ module Tztr
 
     # A zone we can't resolve (a date(1) line's WIB): leave the text alone
     # rather than read it as local time.
-    unknown = str[/ ([A-Za-z]{2,5})\z/, 1]
-    raise ArgumentError, "unknown zone: #{unknown}" if unknown && !unknown.match?(/\A[AaPp][Mm]\z/) && !detect_zone(str)
+    raise ArgumentError, "unknown zone: #{unknown_zone(str)}" if unknown_zone(str)
 
-    # Time.parse accepts 99:14 in some shapes; the Rust port never does.
+    # Time.parse accepts 99:14, and 22:14 AM, in some shapes; the Rust port
+    # never does.
     h, m, sec = str.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/)&.captures&.map(&:to_i)
-    unless h && m <= 59 && sec.to_i <= 60 && (h < 24 || (h == 24 && m.zero? && sec.to_i.zero?))
+    meridiem = str.match?(/\d ?[AaPp][Mm]\b/)
+    unless h && m <= 59 && sec.to_i <= 60 && (h < 24 || (h == 24 && m.zero? && sec.to_i.zero?)) && !(meridiem && h > 12)
       raise ArgumentError, "impossible clock: #{str}"
     end
 
@@ -600,16 +632,27 @@ module Tztr
   # included: 22:14:42,123 stays three digits after a comma.
   def written_clock(original)
     m = original.match(/\d{1,2}:\d{2}(?<secs>:\d{2}(?<frac>[.,]\d+)?)?/)
-    clock = m[:secs] ? '%H:%M:%S' : '%H:%M'
-    clock += "#{m[:frac][0]}%#{m[:frac].size - 1}N" if m[:frac]
+    return '%H:%M' unless m&.[](:secs)
+
+    clock = '%H:%M:%S'
+    # Nanoseconds are as fine as a clock here goes.
+    clock += "#{m[:frac][0]}%#{[m[:frac].size - 1, 9].min}N" if m[:frac]
     clock
   end
 
-  # A zone written back the way the input wrote it: numeric if it was.
+  # A zone written back the way the input wrote it: numeric in the same shape
+  # (-0700, -07:00, -07) if it was, else an abbreviation.
   def written_zone(time, zone)
-    return time.strftime('%z') if zone&.start_with?('+', '-')
+    return time.utc? ? 'UTC' : time.strftime('%Z') unless zone&.match?(/\A[+-]\d/)
 
-    time.utc? ? 'UTC' : time.strftime('%Z')
+    sign = time.utc_offset.negative? ? '-' : '+'
+    hours, minutes = time.utc_offset.abs.divmod(3600)
+    minutes /= 60
+    case zone
+    when /:/ then format('%s%02d:%02d', sign, hours, minutes)
+    when /\A[+-]\d{2}\z/ then minutes.zero? ? format('%s%02d', sign, hours) : format('%s%02d:%02d', sign, hours, minutes)
+    else format('%s%02d%02d', sign, hours, minutes)
+    end
   end
 
   def format_time(time, fmt, original)
@@ -630,22 +673,28 @@ module Tztr
     when /^\d{4}-\d{2}-\d{2}T/
       time.strftime("%Y-%m-%dT#{written_clock(original)}") + tz
     when %r{^\d{4}([-/])\d{2}[-/]\d{2} }
-      time.strftime("%Y#{$1}%m#{$1}%d #{written_clock(original)}") + " " + written_zone(time, nil)
+      date = time.strftime("%Y#{$1}%m#{$1}%d #{written_clock(original)}")
+      offset = original.match(/(?<gap> ?)(?<zone>[+-]\d{2}(?::?\d{2})?)\z/)
+      offset ? date + offset[:gap] + written_zone(time, offset[:zone]) : "#{date} #{written_zone(time, nil)}"
     when CLF_DATE
       time.strftime('%d/%b/%Y:%H:%M:%S %z')
     when UNIX_DATE
       m = $~
-      time.strftime("#{'%a ' if m[:weekday]}%b %e %H:%M:%S ") + written_zone(time, m[:zone]) + time.strftime(' %Y')
+      day = original.match?(/#{MON}  /) ? '%e' : '%-d'
+      time.strftime("#{'%a ' if m[:weekday]}%b #{day} %H:%M:%S ") + written_zone(time, m[:zone]) + time.strftime(' %Y')
     when LOCALE_DATE
       m = $~
-      clock = m[:mer] ? '%I:%M:%S %p' : '%H:%M:%S'
+      clock = m[:time].count(':') == 2 ? '%H:%M:%S' : '%H:%M'
+      clock = clock.sub('%H', '%I') + ' %p' if m[:mer]
       time.strftime("%a #{m[:day].length == 2 ? '%d' : '%-d'} %b %Y #{clock} ") + written_zone(time, m[:zone])
     when RFC_DATE
       m = $~
-      time.strftime("#{'%a, ' if m[:weekday]}#{m[:day].length == 2 ? '%d' : '%-d'} %b %Y %H:%M#{':%S' if m[:time].count(':') == 2} ") + written_zone(time, m[:zone])
+      clock = "%H:%M#{':%S' if m[:time].count(':') == 2}"
+      clock = clock.sub('%H', '%I') + ' %p' if m[:mer]
+      time.strftime("#{'%a, ' if m[:weekday]}#{m[:day].length == 2 ? '%d' : '%-d'} %b %Y #{clock} ") + written_zone(time, m[:zone])
     when /^\d{1,2}:\d{2}/
       time.strftime(written_clock(original)) + " " + written_zone(time, nil)
-    when /\A\d{1,2}(?:\z| ?[AaPp])/
+    when /\A\d{1,2}(?:\z|[ \u00A0\u202F]?[AaPp])/
       time.strftime('%H:%M') + " " + written_zone(time, nil)
     else
       time.strftime('%Y-%m-%d %H:%M:%S') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))

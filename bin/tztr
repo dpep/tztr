@@ -155,6 +155,12 @@ end
 # against today. Say so, once, the first time it actually happens.
 disclosed = []
 disclose = lambda do |line|
+  # A date(1) zone we don't know (EEST): the reason its line was left alone.
+  (Tztr.unknown_zones(line) - disclosed).each do |token|
+    disclosed << token
+    warn %(#{parser.program_name}: ignored "#{token}": not a zone tztr knows)
+  end
+
   # A zone the user wrote but we didn't read, because of its case (Pst).
   (Tztr.ignored_zones(line) - disclosed).each do |token|
     disclosed << token

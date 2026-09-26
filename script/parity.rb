@@ -740,6 +740,72 @@ add(group: "golden", args: ["-i", "now"],
       "expected the -i refusal, got exit #{code} / #{err.inspect}"
     })
 
+# date(1) output from real tzdb zones, generated here rather than by `date` so
+# it runs the same on macOS and Linux. A zone tztr knows converts to the same
+# instant in UTC; one it doesn't (EEST, WIB, ChST) leaves the line as written.
+# Zones whose abbreviation means something else in tztr's table (Shanghai's
+# CST, Manila's PST, Dublin's and Jerusalem's IST) are left out on purpose.
+DATE1 = "%a %b %e %H:%M:%S %Z %Y"
+KNOWN_DATE1_ZONES = %w[
+  UTC America/New_York America/Chicago America/Denver America/Los_Angeles America/Anchorage
+  Pacific/Honolulu Europe/London Europe/Berlin Europe/Paris Asia/Tokyo Asia/Seoul
+  Asia/Hong_Kong Asia/Kolkata Australia/Sydney Pacific/Auckland
+  Asia/Dubai America/Sao_Paulo Asia/Kathmandu
+].freeze
+UNKNOWN_DATE1_ZONES = %w[
+  Europe/Helsinki Europe/Lisbon Australia/Adelaide Pacific/Guam Asia/Jakarta Africa/Johannesburg
+].freeze
+[Time.utc(2026, 1, 15, 12, 0, 0), Time.utc(2026, 7, 15, 12, 0, 0)].each do |instant|
+  (KNOWN_DATE1_ZONES + UNKNOWN_DATE1_ZONES).each do |zone|
+    old = ENV["TZ"]
+    ENV["TZ"] = zone
+    local = instant.localtime.strftime(DATE1)
+    ENV["TZ"] = old
+    abbr = local.split[4]
+    expected =
+      if UNKNOWN_DATE1_ZONES.include?(zone) then local
+      elsif abbr.start_with?("+", "-") then instant.strftime("%a %b %e %H:%M:%S #{abbr.size == 3 ? '+00' : '+0000'} %Y")
+      else instant.strftime("%a %b %e %H:%M:%S UTC %Y")
+      end
+    add(group: "golden", args: ["-t", "utc"], stdin: "#{local}\n",
+        expect: lambda { |out, _err, code|
+          next if code.zero? && out == "#{expected}\n"
+
+          "#{zone} #{local.inspect}: expected #{expected.inspect}, got #{out.inspect}"
+        })
+  end
+end
+
+# Offset shapes and other fixes both builds could get wrong together.
+[
+  ["2026-09-25 22:14:42-07:00",             "2026-09-26 05:14:42+00:00"],
+  ["2026-09-25 22:14:42.123456789-07:00",   "2026-09-26 05:14:42.123456789+00:00"],
+  ["2026-09-25 09:00:00+05:30",             "2026-09-25 03:30:00+00:00"],
+  ["2026-04-03 09:00:00-07",                "2026-04-03 16:00:00+00"],
+  ["12:00 +05:30",                          "06:30 UTC"],
+  ["2026-09-25T22:14:42,123456789-07:00",   "2026-09-26T05:14:42,123456789Z"],
+  ["2026-04-03 12:00:00,200,OK",            "2026-04-03 16:00:00 UTC,200,OK"],
+  ["2026-01-15 9am",                        "2026-01-15 14:00 UTC"],
+  ["3:45 PM",                          "19:45 UTC"],
+  ["22:14 AM",                              "22:14 AM"],
+  ["2026-04-03 12:00:00.1234567891 UTC",    "2026-04-03 12:00:00.123456789 UTC"],
+  ["fe80::1:23:45 up",                      "fe80::1:23:45 up"],
+  ["Fri Sep 25 22:14:42 EEST 2026",         "Fri Sep 25 22:14:42 EEST 2026"],
+].each do |line, expected|
+  add(group: "golden", args: ["-t", "utc", "-d", "2026-04-03"], stdin: "#{line}\n", tz: "America/New_York",
+      expect: lambda { |out, _err, code|
+        next if code.zero? && out == "#{expected}\n"
+
+        "#{line.inspect}: expected #{expected.inspect}, got exit #{code} / #{out.inspect}"
+      })
+end
+add(group: "golden", args: ["--detect", "-J"], stdin: "Fri Sep 25 22:14:42 EEST 2026\n",
+    expect: lambda { |out, _err, code|
+      next if code.zero? && JSON.parse(out)["detected_tz"].nil?
+
+      "EEST must not be detected as EST, got #{out.inspect}"
+    })
+
 # ==============================================================================
 # Runner
 # ==============================================================================

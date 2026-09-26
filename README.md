@@ -82,7 +82,8 @@ echo '15:30 UTC' | tztr -t Mars/Phobos
 - date(1) output: `Fri Sep 25 22:14:42 PDT 2026`, and the shapes around it:
   no zone (ctime), no weekday (`ls -lT`), a numeric zone (`+03`), and glibc's
   locale forms (`Fri 25 Sep 2026 10:14:42 PM PDT`). A zone tztr doesn't know
-  (`WIB`) leaves the whole date as written, rather than half-converting it.
+  (`EEST`, `WIB`) leaves the whole date as written, rather than half-converting
+  it, and `-v` names it.
 - Email and HTTP dates (RFC 2822): `Fri, 25 Sep 2026 22:14:42 -0700`
 - nginx/Apache access logs: `[15/Jan/2015:12:31:01 -0700]`
 - Time only: `15:30 UTC`, `08:30:45 PDT`
@@ -90,8 +91,13 @@ echo '15:30 UTC' | tztr -t Mars/Phobos
 - Hour only, with AM/PM: `9am`, `9 PM PST`. A bare hour with no AM/PM is just a
   number, except as the start of a range whose end has one: `9-9:15am` or
   `9 to 10am`, but not `Room 7 - 3pm` or `Apr 3 - 5pm`.
-- Fractional seconds, every digit kept: `2026-04-03T12:00:00.123456789Z`, and
-  Python logging's comma milliseconds, `2026-04-03 12:00:00,123`
+- Fractional seconds, kept to the nanosecond: `2026-04-03T12:00:00.123456789Z`,
+  an ISO comma (`…T12:00:00,123456789Z`), and Python logging's comma
+  milliseconds, `2026-04-03 12:00:00,123` (a comma before another comma is a
+  CSV column instead: `12:00:00,200,OK`)
+- A dated clock with seconds and a numeric offset, glued or spaced, as Python,
+  GNU `date --rfc-3339` and Postgres write it: `2026-09-25 22:14:42-07:00`,
+  `2026-04-03 09:00:00-07`
 
 Seconds are optional in every dated format (`2026-04-03 15:30`,
 `2026-04-03T15:30Z`), and the output keeps them only if the input had them.
@@ -103,7 +109,8 @@ date, zone or AM/PM, is left alone when another timestamp on the same line
 names any of those, since it is most likely a duration (`...Z took 0:05`).
 A time followed by a unit of time is a duration too, and left alone:
 `Finished in 1:05 minutes`, `took 2:30 hrs` (`sec`, `min`, `hr`, `hour`,
-spelled out or plural). Otherwise a duration alone on its line
+spelled out or plural), which also means `at 15:30 hrs` is left alone.
+Otherwise a duration alone on its line
 (`request took 0:05`) can't be told from a time, and converts as one.
 
 A range or list shares the zone and AM/PM written at its end.
@@ -147,6 +154,11 @@ one (among its other notes):
 echo '15:30 Pst' | tztr -v
 # tztr: ignored "Pst": a zone abbreviation is matched in all uppercase or all lowercase
 ```
+
+Some abbreviations mean different zones in different places. tztr reads each
+one a single way: `CST` as US Central, `PST` as US Pacific and `IST` as India.
+So `date` output from Shanghai, Manila, Dublin or Jerusalem converts wrong.
+Give it a numeric offset, or convert it from a tool that knows the zone.
 
 An abbreviation that names standard or daylight time is that fixed offset,
 whatever the date: `CEST` is +02:00 even in January, `PST` is -08:00 even in

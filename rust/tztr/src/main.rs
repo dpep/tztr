@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use tztr::{
     assumed_date, assumptions, ignored_zones, matches_bytes, resolve_tz, timezone_aliases,
-    translate_bytes, Assumptions, Format, Match,
+    translate_bytes, unknown_zones, Assumptions, Format, Match,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -417,6 +417,14 @@ struct Disclosed {
 fn disclose(opts: &Options, line: &[u8], disclosed: &mut Disclosed) {
     if !opts.verbose || opts.detect {
         return;
+    }
+
+    // A date(1) zone we don't know (EEST): the reason its line was left alone.
+    for token in unknown_zones(line) {
+        if !disclosed.ignored.contains(&token) {
+            eprintln!("tztr: ignored \"{token}\": not a zone tztr knows");
+            disclosed.ignored.push(token);
+        }
     }
 
     // A zone the user wrote but we didn't read, because of its case (Pst).

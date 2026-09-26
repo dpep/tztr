@@ -114,7 +114,13 @@ fn timestamp() -> &'static BytesRegex {
         // A meridiem, optionally followed by a zone ("3:45 PM PST"). A
         // dotted one takes its closing dot; an undotted one leaves a
         // following full stop to the sentence.
-        let mer = format!(r" ?[AaPp](?:\.[Mm]\.|\.?[Mm]\b)(?: ?{tz})?");
+        // Before a meridiem: a space, or the no-break spaces ICU writes.
+        let mer = format!(r"[ \u{{a0}}\u{{202f}}]?[AaPp](?:\.[Mm]\.|\.?[Mm]\b)(?: ?{tz})?");
+        let colon = COLON_OFFSET;
+        // After a dated clock's seconds, glued or not: -07:00, -0700, -07.
+        let dated_off = DATED_OFFSET;
+        // ISO 8601 allows a comma before any number of digits.
+        let isecs = r"(?::[0-9]{2}(?:[.,][0-9]+)?)?";
         // A dated clock's seconds: any fraction after a dot, or Python
         // logging's comma and three.
         let dsecs = r"(?::[0-9]{2}(?:\.[0-9]+|,[0-9]{3}\b)?)?";
@@ -125,7 +131,7 @@ fn timestamp() -> &'static BytesRegex {
             format!(r"\b[0-9]{{2}}/{MON}/[0-9]{{4}}:[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}} [+-][0-9]{{4}}\b"),
             // glibc's locale date(1)
             format!(
-                r"\b{DAY} [0-9]{{1,2}} {MON} [0-9]{{4}} [0-9]{{1,2}}:[0-9]{{2}}:[0-9]{{2}}(?: [AP]M)? {}\b",
+                r"\b{DAY} [0-9]{{1,2}} {MON} [0-9]{{4}} [0-9]{{1,2}}:[0-9]{{2}}(?::[0-9]{{2}})?(?: [AP]M)?(?: {})?\b",
                 date_zone()
             ),
             // date(1), ctime and ls -lT
@@ -135,18 +141,20 @@ fn timestamp() -> &'static BytesRegex {
             ),
             // RFC 2822
             format!(
-                r"\b(?:{DAY}, )?[0-9]{{1,2}} {MON} [0-9]{{4}} [0-9]{{2}}:[0-9]{{2}}(?::[0-9]{{2}})? (?:[+-][0-9]{{4}}\b|(?:{zone})\b)"
+                r"\b(?:{DAY}, )?[0-9]{{1,2}} {MON} [0-9]{{4}} [0-9]{{1,2}}:[0-9]{{2}}(?::[0-9]{{2}})?(?: [AP]M)? (?:[+-][0-9]{{4}}\b|(?:{zone})\b)"
             ),
             // ISO 8601 with Z or offset
-            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{1,2}}:[0-9]{{2}}{dsecs}(?:Z|[+-][0-9]{{2}}:?[0-9]{{2}})"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{1,2}}:[0-9]{{2}}{isecs}(?:Z|[+-][0-9]{{2}}:?[0-9]{{2}})"),
             // ISO 8601 without timezone
-            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{1,2}}:[0-9]{{2}}{dsecs}"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{1,2}}:[0-9]{{2}}{isecs}"),
             // Date space 12-hour time — above the with-tz pattern, and the
             // date must be part of the match or the time resolves its DST
             // against today instead of the date beside it.
-            format!(r"{date} [0-9]{{1,2}}:[0-9]{{2}}{dsecs}{mer}"),
-            // Date space time with tz
-            format!(r"{date} [0-9]{{1,2}}:[0-9]{{2}}{dsecs} ?{tz}"),
+            format!(r"{date} [0-9]{{1,2}}(?::[0-9]{{2}}{dsecs})?{mer}"),
+            // Date space time with tz: 2026-04-03 12:34:56 UTC, 12:34:56-07:00
+            format!(
+                r"{date} [0-9]{{1,2}}:[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+|,[0-9]{{3}}\b)? ?(?:{dated_off}|(?:{zone})\b)| ?(?:{zone})\b| (?:{num}|{colon}))"
+            ),
             // Date space time
             format!(r"{date} [0-9]{{1,2}}:[0-9]{{2}}{dsecs}"),
             // 12-hour time
@@ -154,7 +162,7 @@ fn timestamp() -> &'static BytesRegex {
             // Time with tz. A numeric offset glued to the clock needs
             // seconds, or 15:30-1645 would read as one.
             format!(
-                r"\b[0-9]{{1,2}}:[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+)? ?{tz}| ?(?:{zone})\b| (?:{num}))"
+                r"\b[0-9]{{1,2}}:[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+)? ?(?:{tz}|{colon})| ?(?:{zone})\b| (?:{num}|{colon}))"
             ),
             // Time with offset. Seconds required and the offset in range, so
             // the hyphen of a range like 15:30-16:45 is not read as one.
@@ -414,11 +422,24 @@ fn scan_stamps(line: &[u8]) -> Vec<Stamp<'_>> {
             !(bare_time_re().is_match(ascii(m.as_bytes()))
                 && duration_unit_re().is_match(&line[m.end()..]))
         })
+        // A clock inside a longer run of colons: IPv6 (fe80::1:23:45), SMPTE
+        // timecodes (01:02:03:04).
+        .filter(|m| {
+            let after = &line[m.end()..];
+            !(clock_first_re().is_match(ascii(m.as_bytes()))
+                && (m.start() > 0 && line[m.start() - 1] == b':'
+                    || after.len() > 1 && after[0] == b':' && after[1].is_ascii_digit()))
+        })
         .map(|m| {
-            let text = ascii(m.as_bytes());
+            let mut text = ascii(m.as_bytes());
+            // ,200 before another comma is a CSV column, not milliseconds.
+            let after = line.get(m.end()).copied();
+            if csv_frac_re().is_match(text) && !matches!(after, None | Some(b' ' | b'\t' | b']')) {
+                text = &text[..text.len() - 4];
+            }
             Stamp {
                 start: m.start(),
-                end: m.end(),
+                end: m.start() + text.len(),
                 text,
                 effective: reading(text),
                 group: None,
@@ -447,7 +468,7 @@ fn duration_unit_re() -> &'static BytesRegex {
 /// or a numeric one as tzdb writes it for zones without a name (`+03`).
 fn date_zone() -> String {
     format!(
-        "(?:{}|[A-Z]{{2,5}}|[+-][0-9]{{2}}(?:[0-9]{{2}})?)",
+        "(?:{}|[A-Z][A-Za-z]?[A-Z]{{1,3}}|[+-][0-9]{{2}}(?:[0-9]{{2}})?)",
         zone_alternation()
     )
 }
@@ -469,7 +490,7 @@ fn locale_date_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"^{DAY} (?<day>[0-9]{{1,2}}) (?<mon>{MON}) (?<year>[0-9]{{4}}) (?<time>\S+)(?<mer> [AP]M)? (?<zone>\S+)$"
+            r"^{DAY} (?<day>[0-9]{{1,2}}) (?<mon>{MON}) (?<year>[0-9]{{4}}) (?<time>\S+)(?<mer> [AP]M)?(?: (?<zone>\S+))?$"
         ))
         .unwrap()
     })
@@ -491,7 +512,7 @@ fn rfc_date_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"^(?<weekday>{DAY}, )?(?<day>[0-9]{{1,2}}) (?<mon>{MON}) (?<year>[0-9]{{4}}) (?<time>\S+) (?<zone>\S+)$"
+            r"^(?<weekday>{DAY}, )?(?<day>[0-9]{{1,2}}) (?<mon>{MON}) (?<year>[0-9]{{4}}) (?<time>\S+)(?<mer> [AP]M)? (?<zone>\S+)$"
         ))
         .unwrap()
     })
@@ -500,7 +521,18 @@ fn rfc_date_re() -> &'static Regex {
 /// What a timestamp is parsed as: a named-month date as YYYY-MM-DD, so the
 /// weekday and day roll over with the clock; an hour alone as its o'clock
 /// (9am is 9:00am); anything else as written. Mirrors `Tztr.reading`.
+fn clock_first_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[0-9]{1,2}:").unwrap())
+}
+
+fn csv_frac_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r",[0-9]{3}$").unwrap())
+}
+
 fn reading(text: &str) -> String {
+    let text = &text.replace(['\u{a0}', '\u{202f}'], " ");
     let named = [
         unix_date_re(),
         rfc_date_re(),
@@ -527,12 +559,19 @@ fn reading(text: &str) -> String {
             }
         }
         out
-    } else if let Some(c) = hour_only_re().captures(text) {
-        format!("{}:00{}", &c[1], &text[c[1].len()..])
     } else {
         let text = slashed_date_re().replace(text, "$1-$2-");
-        comma_frac_re().replace(&text, "$1.$2").into_owned()
+        let text = comma_frac_re().replace(&text, "$1.$2");
+        // An hour alone reads as its o'clock: 9am is 9:00am.
+        let text = hour_only_re().replace(&text, "${1}${2}:00${3}");
+        // -07, as Postgres writes an offset, is -07:00.
+        hour_offset_re().replace(&text, "${1}${2}:00").into_owned()
     }
+}
+
+fn hour_offset_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"([0-9])([+-][0-9]{2})$").unwrap())
 }
 
 fn slashed_date_re() -> &'static Regex {
@@ -676,7 +715,7 @@ fn bare_time_re() -> &'static Regex {
 
 fn hour_only_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^([0-9]{1,2}) ?[AaPp]").unwrap())
+    RE.get_or_init(|| Regex::new(r"^(\S+ )?([0-9]{1,2})( ?[AaPp])").unwrap())
 }
 
 /// A time-only timestamp in pieces, for sharing a range's zone and meridiem.
@@ -685,11 +724,17 @@ fn time_parts_re() -> &'static Regex {
     RE.get_or_init(|| {
         let zone = zone_alternation();
         Regex::new(&format!(
-            r"^(?<clock>(?<hour>[0-9]{{1,2}}):[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+)?)?)(?: ?(?<meridiem>[AaPp](?:\.[Mm]\.|\.?[Mm]\b)))?(?: ?(?<zone>(?:{zone})\b|{NUM_OFFSET}))?$"
+            r"^(?<clock>(?<hour>[0-9]{{1,2}}):[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+)?)?)(?: ?(?<meridiem>[AaPp](?:\.[Mm]\.|\.?[Mm]\b)))?(?: ?(?<zone>(?:{zone})\b|{NUM_OFFSET}|{COLON_OFFSET}))?$"
         ))
         .unwrap()
     })
 }
+
+/// A numeric offset with a colon, within -12..+14: `+05:30`.
+const COLON_OFFSET: &str = r"[+-](?:0[0-9]|1[0-3]):[0-5][0-9]\b|[+-]14:00\b";
+/// After a dated clock's seconds: `-07:00`, `-0700`, and the `-07` Postgres
+/// writes. Without seconds, `2026-04-03 9:00-10:00` is a range.
+const DATED_OFFSET: &str = r"[+-](?:(?:0[0-9]|1[0-3]):?[0-5][0-9]|14:?00|0[0-9]|1[0-4])\b";
 
 /// A numeric offset within the -12..+14 real zones occupy.
 const NUM_OFFSET: &str = r"[+-](?:0[0-9]|1[0-3])[0-5][0-9]\b|[+-]1400\b";
@@ -862,9 +907,11 @@ impl Assumptions {
 
 /// What converting `line` would have to assume. See [`Assumptions`].
 pub fn assumptions(line: &[u8]) -> Assumptions {
+    // A timestamp left alone for its unknown zone assumes nothing.
     let readings: Vec<String> = timestamps(line, false)
         .into_iter()
         .map(|s| s.effective)
+        .filter(|s| unknown_zone(s).is_none())
         .collect();
     Assumptions {
         date: readings.iter().any(|s| time_only_re().is_match(s)),
@@ -872,8 +919,7 @@ pub fn assumptions(line: &[u8]) -> Assumptions {
     }
 }
 
-/// Today's date in `tz` as `YYYY-MM-DD` — the date a date-less timestamp is
-/// resolved against when no reference date is given.
+/// Today's date in `tz` as `YYYY-MM-DD`.
 pub fn today_in_zone(tz: &str) -> String {
     let (y, m, d) = today_in(&resolve_zone(tz));
     format!("{y:04}-{m:02}-{d:02}")
@@ -890,8 +936,36 @@ pub fn detect_format(s: &str) -> &'static str {
     }
 }
 
-/// Extract the literal timezone token from a match, if present. Mirrors
-/// `Tztr.detect_zone`.
+/// A zone-shaped word a reading ends with that isn't one tztr knows (EEST,
+/// WIB): the timestamp is left as written, and `-v` says why. Mirrors
+/// `Tztr.unknown_zone`.
+fn unknown_zone(time: &str) -> Option<String> {
+    let token = unknown_zone_re().captures(time)?.get(1)?.as_str();
+    let meridiem = token.eq_ignore_ascii_case("am") || token.eq_ignore_ascii_case("pm");
+    (!meridiem && detect_zone(time).is_none()).then(|| token.to_string())
+}
+
+fn unknown_zone_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r" ([A-Za-z]{2,5})$").unwrap())
+}
+
+/// Zone-shaped words a date(1) line carries that tztr doesn't know (EEST),
+/// for `-v` to name as the reason the line was left alone.
+pub fn unknown_zones(line: &[u8]) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    for stamp in timestamps(line, false) {
+        if let Some(token) = unknown_zone(&stamp.effective) {
+            if !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+    }
+    tokens
+}
+
+/// The zone a reading ends with. It must start the text or follow a space or
+/// digit: EEST is not EST with an E in front. Mirrors `Tztr.detect_zone`.
 pub fn detect_zone(s: &str) -> Option<String> {
     detect_zone_re().captures(s).map(|c| c[1].to_string())
 }
@@ -910,7 +984,10 @@ fn detect_zone_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         let zone = zone_alternation();
-        Regex::new(&format!(r" ?({zone}|[+-][0-9]{{2}}:?[0-9]{{2}})$")).unwrap()
+        Regex::new(&format!(
+            r"(?:^|[ 0-9])({zone}|[+-][0-9]{{2}}(?::?[0-9]{{2}})?)$"
+        ))
+        .unwrap()
     })
 }
 
@@ -962,7 +1039,7 @@ fn parse(
     let second: i8 = group("s").map_or(0, |v| v.parse().unwrap_or(0));
     let nanos = group("frac").map_or(0, frac_to_nanos);
     let zone_token = group("zone").unwrap_or("");
-    let hour = apply_meridiem(hour, group("mer"));
+    let hour = apply_meridiem(hour, group("mer"))?;
 
     // The zone the wall-clock time is anchored in — and, for date-less inputs,
     // the zone whose "today" fills the missing date (mirrors Ruby's
@@ -1038,11 +1115,13 @@ fn civil_datetime(date: Date, hour: i8, minute: i8, second: i8, nanos: i32) -> O
 
 /// Fold a 12-hour clock reading onto the 24-hour clock. Out-of-range readings
 /// (`15:30 PM`) are left alone — the calendar check downstream decides.
-fn apply_meridiem(hour: i8, meridiem: Option<&str>) -> i8 {
+fn apply_meridiem(hour: i8, meridiem: Option<&str>) -> Option<i8> {
     match meridiem.map(str::to_ascii_lowercase).as_deref() {
-        Some("p") if hour < 12 => hour + 12,
-        Some("a") if hour == 12 => 0,
-        _ => hour,
+        // 22:14 AM is not a time.
+        Some(_) if hour > 12 => None,
+        Some("p") if hour < 12 => Some(hour + 12),
+        Some("a") if hour == 12 => Some(0),
+        _ => Some(hour),
     }
 }
 
@@ -1130,7 +1209,7 @@ fn resolve_zone(input: &str) -> TimeZone {
 /// An hour alone, as a range's start (`9`) or with a meridiem (`9am`).
 fn hour_alone_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[0-9]{1,2}(?:$| ?[AaPp])").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]{1,2}(?:$|[ \u{a0}\u{202f}]?[AaPp])").unwrap())
 }
 
 fn hour_minute_re() -> &'static Regex {
@@ -1167,11 +1246,19 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
         )
     } else if let Some(c) = any_date_space_re().captures(original) {
         let sep = &c[1];
-        format!(
-            "{} {} {abbrev}",
+        let date = format!(
+            "{} {}",
             strf(zoned, &format!("%Y{sep}%m{sep}%d")),
             written_clock(zoned, original)
-        )
+        );
+        match trailing_offset_re().captures(original) {
+            Some(o) => format!(
+                "{date}{}{}",
+                &o["gap"],
+                written_zone(zoned, Some(&o["zone"]))
+            ),
+            None => format!("{date} {abbrev}"),
+        }
     } else if clf_date_re().is_match(original) {
         strf(zoned, "%d/%b/%Y:%H:%M:%S %z")
     } else if let Some(c) = unix_date_re().captures(original) {
@@ -1180,23 +1267,24 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
         } else {
             ""
         };
+        let day = if unix_double_space_re().is_match(original) {
+            "%e"
+        } else {
+            "%-d"
+        };
         format!(
             "{} {} {}",
-            strf(zoned, &format!("{weekday}%b %e %H:%M:%S")),
+            strf(zoned, &format!("{weekday}%b {day} %H:%M:%S")),
             written_zone(zoned, c.name("zone").map(|z| z.as_str())),
             strf(zoned, "%Y")
         )
     } else if let Some(c) = locale_date_re().captures(original) {
         let day = if c["day"].len() == 2 { "%d" } else { "%-d" };
-        let clock = if c.name("mer").is_some() {
-            "%I:%M:%S %p"
-        } else {
-            "%H:%M:%S"
-        };
+        let clock = written_12h(&c["time"], c.name("mer").is_some());
         format!(
             "{} {}",
             strf(zoned, &format!("%a {day} %b %Y {clock}")),
-            written_zone(zoned, Some(&c["zone"]))
+            written_zone(zoned, c.name("zone").map(|z| z.as_str()))
         )
     } else if let Some(c) = rfc_date_re().captures(original) {
         let weekday = if c.name("weekday").is_some() {
@@ -1205,19 +1293,11 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
             ""
         };
         let day = if c["day"].len() == 2 { "%d" } else { "%-d" };
-        let secs = if c["time"].matches(':').count() == 2 {
-            ":%S"
-        } else {
-            ""
-        };
-        let zone = if c["zone"].starts_with(['+', '-']) {
-            strf(zoned, "%z")
-        } else {
-            abbrev
-        };
+        let clock = written_12h(&c["time"], c.name("mer").is_some());
         format!(
-            "{} {zone}",
-            strf(zoned, &format!("{weekday}{day} %b %Y %H:%M{secs}"))
+            "{} {}",
+            strf(zoned, &format!("{weekday}{day} %b %Y {clock}")),
+            written_zone(zoned, Some(&c["zone"]))
         )
     } else if hour_minute_re().is_match(original) {
         format!("{} {abbrev}", written_clock(zoned, original))
@@ -1226,6 +1306,26 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
     } else {
         format!("{} {abbrev}", strf(zoned, "%Y-%m-%d %H:%M:%S"))
     }
+}
+
+/// A named-month date's clock as written: seconds if it had them, and the
+/// 12-hour form with its AM/PM if it had one.
+fn written_12h(time: &str, meridiem: bool) -> String {
+    let secs = if time.matches(':').count() == 2 {
+        ":%S"
+    } else {
+        ""
+    };
+    if meridiem {
+        format!("%I:%M{secs} %p")
+    } else {
+        format!("%H:%M{secs}")
+    }
+}
+
+fn unix_double_space_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(&format!("{MON}  ")).unwrap())
 }
 
 /// A clock to the precision it was written with, fraction and its separator
@@ -1257,11 +1357,24 @@ fn clock_re() -> &'static Regex {
 
 /// A zone written back the way the input wrote it: numeric if it was.
 fn written_zone(zoned: &Zoned, zone: Option<&str>) -> String {
-    if zone.is_some_and(|z| z.starts_with(['+', '-'])) {
-        strf(zoned, "%z")
+    let Some(zone) = zone.filter(|z| z.starts_with(['+', '-'])) else {
+        return zoned.strftime("%Z").to_string();
+    };
+    let secs = zoned.offset().seconds();
+    let sign = if secs < 0 { '-' } else { '+' };
+    let (hours, minutes) = (secs.abs() / 3600, secs.abs() % 3600 / 60);
+    if zone.contains(':') || zone.len() == 3 && minutes != 0 {
+        format!("{sign}{hours:02}:{minutes:02}")
+    } else if zone.len() == 3 {
+        format!("{sign}{hours:02}")
     } else {
-        zoned.strftime("%Z").to_string()
+        format!("{sign}{hours:02}{minutes:02}")
     }
+}
+
+fn trailing_offset_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?<gap> ?)(?<zone>[+-][0-9]{2}(?::?[0-9]{2})?)$").unwrap())
 }
 
 fn any_date_space_re() -> &'static Regex {
@@ -1567,7 +1680,7 @@ mod tests {
         );
         assert_eq!(
             log("Fri Sep 25 22:14:42 +03 2026", "UTC", None),
-            "Fri Sep 25 19:14:42 +0000 2026"
+            "Fri Sep 25 19:14:42 +00 2026"
         );
         assert_eq!(
             log("Fri Sep 25 22:14:42 WIB 2026", "UTC", None),
@@ -1635,6 +1748,192 @@ mod tests {
             "15:30 UTC meeting"
         );
         assert_eq!(tr_on("10:30 h", "UTC", "2026-04-03"), "10:30 UTC h");
+    }
+
+    fn hunt(line: &str, to: &str, from: Option<&str>, date: Option<&str>) -> String {
+        translate(line, to, from, None, date)
+    }
+
+    #[test]
+    fn eest_is_not_est_with_a_letter_in_front() {
+        for zone in [
+            "EEST", "EET", "WEST", "WET", "ACST", "ACDT", "MET", "MEST", "HKST", "ChST",
+        ] {
+            let line = format!("Fri Sep 25 22:14:42 {zone} 2026");
+            assert_eq!(hunt(&line, "UTC", None, None), line, "{zone}");
+        }
+        assert_eq!(
+            hunt("Fri 25 Sep 2026 10:14:42 PM EEST", "UTC", None, None),
+            "Fri 25 Sep 2026 10:14:42 PM EEST"
+        );
+        let m = matches(
+            "Fri Sep 25 22:14:42 EEST 2026",
+            "UTC",
+            None,
+            None,
+            true,
+            None,
+        );
+        assert_eq!(m[0].detected_tz, None);
+        assert_eq!(unknown_zones(b"Fri Sep 25 22:14:42 EEST 2026"), ["EEST"]);
+    }
+
+    #[test]
+    fn a_dated_clock_with_seconds_takes_a_numeric_offset() {
+        assert_eq!(
+            hunt("2026-09-25 22:14:42-07:00", "UTC", None, None),
+            "2026-09-26 05:14:42+00:00"
+        );
+        assert_eq!(
+            hunt(
+                "created_at: 2026-01-15 09:00:00-05:00",
+                "America/New_York",
+                None,
+                None
+            ),
+            "created_at: 2026-01-15 09:00:00-05:00"
+        );
+        assert_eq!(
+            hunt("2026-09-25 22:14:42.123456789-07:00", "UTC", None, None),
+            "2026-09-26 05:14:42.123456789+00:00"
+        );
+        assert_eq!(
+            hunt("2026-09-25 09:00:00+05:30", "America/New_York", None, None),
+            "2026-09-24 23:30:00-04:00"
+        );
+        assert_eq!(
+            hunt("2026-04-03 09:00:00-07", "UTC", None, None),
+            "2026-04-03 16:00:00+00"
+        );
+        assert_eq!(
+            hunt("2026-04-03 09:00:00 -0700", "UTC", None, None),
+            "2026-04-03 16:00:00 +0000"
+        );
+    }
+
+    #[test]
+    fn a_spaced_colon_offset_and_an_iso_comma_fraction_are_read() {
+        assert_eq!(
+            hunt("12:00 +05:30", "UTC", None, Some("2026-04-03")),
+            "06:30 UTC"
+        );
+        assert_eq!(
+            hunt("2026-09-25T22:14:42,123456789-07:00", "UTC", None, None),
+            "2026-09-26T05:14:42,123456789Z"
+        );
+    }
+
+    #[test]
+    fn a_csv_column_after_the_seconds_is_kept() {
+        assert_eq!(
+            hunt("2026-04-03 12:00:00,200,OK", "UTC", Some("UTC"), None),
+            "2026-04-03 12:00:00 UTC,200,OK"
+        );
+        assert_eq!(
+            hunt("2026-04-03 12:00:00,123 INFO", "UTC", Some("UTC"), None),
+            "2026-04-03 12:00:00,123 UTC INFO"
+        );
+    }
+
+    #[test]
+    fn a_dated_hour_with_a_meridiem_keeps_its_date() {
+        assert_eq!(
+            hunt("2026-01-15 9am", "Europe/London", Some("UTC"), None),
+            "2026-01-15 09:00 GMT"
+        );
+        assert_eq!(
+            hunt(
+                "2026-04-03 11 PM - 12:30 AM",
+                "Asia/Tokyo",
+                Some("UTC"),
+                None
+            ),
+            "2026-04-04 08:00 JST - 09:30 JST"
+        );
+    }
+
+    #[test]
+    fn a_no_break_space_before_am_pm_is_read() {
+        let ny = "America/New_York";
+        assert_eq!(
+            hunt("3:45\u{202f}PM", ny, Some("UTC"), Some("2026-09-25")),
+            "11:45 EDT"
+        );
+        assert_eq!(
+            hunt("3:45\u{a0}PM", ny, Some("UTC"), Some("2026-09-25")),
+            "11:45 EDT"
+        );
+    }
+
+    #[test]
+    fn an_hour_past_12_with_a_meridiem_is_left_alone() {
+        assert_eq!(
+            hunt("22:14 AM", "UTC", None, Some("2026-04-03")),
+            "22:14 AM"
+        );
+        assert_eq!(
+            hunt("13:00 AM", "UTC", None, Some("2026-04-03")),
+            "13:00 AM"
+        );
+        assert_eq!(
+            hunt("2026-04-03 22:14 AM", "UTC", None, None),
+            "2026-04-03 22:14 AM"
+        );
+    }
+
+    #[test]
+    fn at_most_nine_fraction_digits_are_kept() {
+        assert_eq!(
+            hunt("2026-04-03 12:00:00.1234567891 UTC", "UTC", None, None),
+            "2026-04-03 12:00:00.123456789 UTC"
+        );
+    }
+
+    #[test]
+    fn rfc_with_a_meridiem_and_locale_dates_without_seconds_or_zone() {
+        let ny = "America/New_York";
+        assert_eq!(
+            hunt("Fri, 25 Sep 2026 10:14:42 PM PDT", ny, None, None),
+            "Sat, 26 Sep 2026 01:14:42 AM EDT"
+        );
+        assert_eq!(
+            hunt("Fri 25 Sep 2026 22:14 PDT", ny, None, None),
+            "Sat 26 Sep 2026 01:14 EDT"
+        );
+        assert_eq!(
+            hunt(
+                "Fri 25 Sep 2026 10:14:42 PM",
+                ny,
+                Some("America/Los_Angeles"),
+                None
+            ),
+            "Sat 26 Sep 2026 01:14:42 AM EDT"
+        );
+    }
+
+    #[test]
+    fn a_single_space_before_a_one_digit_day_is_mirrored() {
+        let la = "America/Los_Angeles";
+        assert_eq!(
+            hunt("Sat Sep 5 22:14:42 UTC 2026", la, None, None),
+            "Sat Sep 5 15:14:42 PDT 2026"
+        );
+        assert_eq!(
+            hunt("Sat Sep  5 22:14:42 UTC 2026", la, None, None),
+            "Sat Sep  5 15:14:42 PDT 2026"
+        );
+    }
+
+    #[test]
+    fn ipv6_and_smpte_timecodes_are_left_alone() {
+        assert_eq!(
+            hunt("fe80::1:23:45 up", "UTC", None, Some("2026-04-03")),
+            "fe80::1:23:45 up"
+        );
+        assert_eq!(
+            hunt("cut at 01:02:03:04", "UTC", None, Some("2026-04-03")),
+            "cut at 01:02:03:04"
+        );
     }
 
     #[test]
