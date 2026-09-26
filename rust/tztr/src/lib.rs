@@ -106,43 +106,43 @@ fn timestamp() -> &'static BytesRegex {
     RE.get_or_init(|| {
         let zone = zone_alternation();
         // A trailing zone token: an allowlisted abbreviation or +HHMM.
-        let tz = format!(r"(?:(?:{zone})\b|[+-]\d{{4}}\b)");
+        let tz = format!(r"(?:(?:{zone})\b|[+-][0-9]{{4}}\b)");
         // Seconds and fractional seconds, both optional.
-        let secs = r"(?::\d{2}(?:\.\d+)?)?";
+        let secs = r"(?::[0-9]{2}(?:\.[0-9]+)?)?";
         // A meridiem, optionally followed by a zone ("3:45 PM PST"). A
         // dotted one takes its closing dot; an undotted one leaves a
         // following full stop to the sentence.
         let mer = format!(r" ?[AaPp](?:\.[Mm]\.|\.?[Mm]\b)(?: ?{tz})?");
         let alternation = [
             // date(1) and ctime
-            format!(r"\b{DAY} {MON}  ?\d{{1,2}} \d{{2}}:\d{{2}}:\d{{2}} (?:(?:{zone}) )?\d{{4}}\b"),
+            format!(r"\b{DAY} {MON}  ?[0-9]{{1,2}} [0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}} (?:(?:{zone}) )?[0-9]{{4}}\b"),
             // RFC 2822
             format!(
-                r"\b(?:{DAY}, )?\d{{1,2}} {MON} \d{{4}} \d{{2}}:\d{{2}}(?::\d{{2}})? (?:[+-]\d{{4}}\b|(?:{zone})\b)"
+                r"\b(?:{DAY}, )?[0-9]{{1,2}} {MON} [0-9]{{4}} [0-9]{{2}}:[0-9]{{2}}(?::[0-9]{{2}})? (?:[+-][0-9]{{4}}\b|(?:{zone})\b)"
             ),
             // ISO 8601 with Z or offset
-            format!(r"\d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}{secs}(?:Z|[+-]\d{{2}}:?\d{{2}})"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}{secs}(?:Z|[+-][0-9]{{2}}:?[0-9]{{2}})"),
             // ISO 8601 without timezone
-            format!(r"\d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}{secs}"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}{secs}"),
             // Date space 12-hour time — above the with-tz pattern, and the
             // date must be part of the match or the time resolves its DST
             // against today instead of the date beside it.
-            format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{1,2}}:\d{{2}}{secs}{mer}"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} [0-9]{{1,2}}:[0-9]{{2}}{secs}{mer}"),
             // Date space time with tz
-            format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}{secs} ?{tz}"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} [0-9]{{2}}:[0-9]{{2}}{secs} ?{tz}"),
             // Date space time
-            format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}{secs}"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} [0-9]{{2}}:[0-9]{{2}}{secs}"),
             // 12-hour time
-            format!(r"\b\d{{1,2}}:\d{{2}}{secs}{mer}"),
+            format!(r"\b[0-9]{{1,2}}:[0-9]{{2}}{secs}{mer}"),
             // Time with tz
-            format!(r"\b\d{{1,2}}:\d{{2}}{secs} ?{tz}"),
+            format!(r"\b[0-9]{{1,2}}:[0-9]{{2}}{secs} ?{tz}"),
             // Time with offset. Seconds required and the offset in range, so
             // the hyphen of a range like 15:30-16:45 is not read as one.
-            r"\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?[+-](?:0\d|1[0-4]):?[0-5]\d\b".to_string(),
+            r"\b[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?[+-](?:0[0-9]|1[0-4]):?[0-5][0-9]\b".to_string(),
             // Hour with a meridiem: 9am, 9 PM PST
-            format!(r"\b\d{{1,2}}{mer}"),
+            format!(r"\b[0-9]{{1,2}}{mer}"),
             // Bare time
-            format!(r"\b\d{{1,2}}:\d{{2}}{secs}\b"),
+            format!(r"\b[0-9]{{1,2}}:[0-9]{{2}}{secs}\b"),
         ]
         .map(|p| format!("(?:{p})"))
         .join("|");
@@ -214,7 +214,7 @@ fn unknown(input: &str) -> TzError {
 
 fn numeric_offset_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[+-]?\d{1,2}$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[+-]?[0-9]{1,2}$").unwrap())
 }
 
 /// Translate every detected timestamp in `line`, preserving surrounding text.
@@ -390,7 +390,7 @@ fn unix_date_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"^{DAY} (?<mon>{MON})  ?(?<day>\d{{1,2}}) (?<time>\S+) (?:(?<zone>\S+) )?(?<year>\d{{4}})$"
+            r"^{DAY} (?<mon>{MON})  ?(?<day>[0-9]{{1,2}}) (?<time>\S+) (?:(?<zone>\S+) )?(?<year>[0-9]{{4}})$"
         ))
         .unwrap()
     })
@@ -401,7 +401,7 @@ fn rfc_date_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"^(?<weekday>{DAY}, )?(?<day>\d{{1,2}}) (?<mon>{MON}) (?<year>\d{{4}}) (?<time>\S+) (?<zone>\S+)$"
+            r"^(?<weekday>{DAY}, )?(?<day>[0-9]{{1,2}}) (?<mon>{MON}) (?<year>[0-9]{{4}}) (?<time>\S+) (?<zone>\S+)$"
         ))
         .unwrap()
     })
@@ -450,6 +450,7 @@ fn with_range_hours<'a>(line: &'a [u8], stamps: Vec<Stamp<'a>>) -> Vec<Stamp<'a>
             .captures(gap)
             .filter(|_| has_meridiem)
             .map(|c| c.name("hour").unwrap())
+            .filter(|h| !after_month_re().is_match(&gap[..h.start()]))
             .filter(|h| (1..=12).contains(&ascii(h.as_bytes()).parse::<u8>().unwrap_or(0)))
         {
             let text = ascii(hour.as_bytes());
@@ -546,12 +547,12 @@ fn shared_meridiem(hour: u8, tail: &regex::Captures) -> Option<&'static str> {
 
 fn bare_time_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]{1,2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?$").unwrap())
 }
 
 fn hour_only_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^(\d{1,2}) ?[AaPp]").unwrap())
+    RE.get_or_init(|| Regex::new(r"^([0-9]{1,2}) ?[AaPp]").unwrap())
 }
 
 /// A time-only timestamp in pieces, for sharing a range's zone and meridiem.
@@ -560,7 +561,7 @@ fn time_parts_re() -> &'static Regex {
     RE.get_or_init(|| {
         let zone = zone_alternation();
         Regex::new(&format!(
-            r"^(?<clock>(?<hour>\d{{1,2}}):\d{{2}}(?::\d{{2}}(?:\.\d+)?)?)(?: ?(?<meridiem>[AaPp](?:\.[Mm]\.|\.?[Mm]\b)))?(?: ?(?<zone>(?:{zone})\b|[+-]\d{{4}}\b))?$"
+            r"^(?<clock>(?<hour>[0-9]{{1,2}}):[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+)?)?)(?: ?(?<meridiem>[AaPp](?:\.[Mm]\.|\.?[Mm]\b)))?(?: ?(?<zone>(?:{zone})\b|[+-][0-9]{{4}}\b))?$"
         ))
         .unwrap()
     })
@@ -580,13 +581,26 @@ fn list_join_re() -> &'static BytesRegex {
     RE.get_or_init(|| BytesRegex::new(r"(?i)^[ \t]*(?:,|(?:,[ \t]*)?(?:or|and))[ \t]*$").unwrap())
 }
 
-/// A bare hour starting a range, the 9 of "9-9:15am". Not after a letter,
-/// digit, colon or dot, so v1.9-10am stays put.
+/// A bare hour starting a range, the 9 of "9-10am" or "9 to 10am": at the
+/// start of the text or after a space or "(", and hyphenated tight or joined
+/// by a word. A spaced hyphen ("Room 7 - 3pm", "Apr 3 - 5pm") is not enough.
 fn range_hour_re() -> &'static BytesRegex {
     static RE: OnceLock<BytesRegex> = OnceLock::new();
     RE.get_or_init(|| {
+        BytesRegex::new(
+            r"(?i)(?:^|[ \t(])(?<hour>[0-9]{1,2})(?:[-–—]|[ \t]+(?:to|until|till|through|thru)[ \t]+)$",
+        )
+        .unwrap()
+    })
+}
+
+/// A day of the month, not an hour: the 1 of "Oct 1 thru 5pm".
+fn after_month_re() -> &'static BytesRegex {
+    static RE: OnceLock<BytesRegex> = OnceLock::new();
+    RE.get_or_init(|| {
         BytesRegex::new(&format!(
-            r"(?i)(?:^|[^0-9A-Za-z_:.])(?<hour>\d{{1,2}})[ \t]*(?:{RANGE_WORDS})[ \t]*$"
+            r"(?i)\b(?:{})[a-z]*\.?[ \t]*$",
+            MONTH_ABBRS.join("|")
         ))
         .unwrap()
     })
@@ -772,19 +786,19 @@ pub fn detect_zone(s: &str) -> Option<String> {
 
 fn iso_t_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T").unwrap())
 }
 
 fn date_space_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2} ").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]{4}-[0-9]{2}-[0-9]{2} ").unwrap())
 }
 
 fn detect_zone_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         let zone = zone_alternation();
-        Regex::new(&format!(r"\s?({zone}|[+-]\d{{2}}:?\d{{2}})$")).unwrap()
+        Regex::new(&format!(r" ?({zone}|[+-][0-9]{{2}}:?[0-9]{{2}})$")).unwrap()
     })
 }
 
@@ -795,7 +809,7 @@ fn components_re() -> &'static Regex {
     RE.get_or_init(|| {
         let zone = zone_alternation();
         Regex::new(&format!(
-            r"^(?:(?<y>\d{{4}})-(?<mo>\d{{2}})-(?<d>\d{{2}})[T ])?(?<h>\d{{1,2}}):(?<mi>\d{{2}})(?::(?<s>\d{{2}})(?:\.(?<frac>\d+))?)?(?: ?(?<mer>[AaPp])\.?[Mm]\.?)?\s?(?<zone>{zone}|[+-]\d{{2}}:?\d{{2}}|[+-]\d{{4}})?$",
+            r"^(?:(?<y>[0-9]{{4}})-(?<mo>[0-9]{{2}})-(?<d>[0-9]{{2}})[T ])?(?<h>[0-9]{{1,2}}):(?<mi>[0-9]{{2}})(?::(?<s>[0-9]{{2}})(?:\.(?<frac>[0-9]+))?)?(?: ?(?<mer>[AaPp])\.?[Mm]\.?)?\s?(?<zone>{zone}|[+-][0-9]{{2}}:?[0-9]{{2}}|[+-][0-9]{{4}})?$",
         ))
         .unwrap()
     })
@@ -803,7 +817,7 @@ fn components_re() -> &'static Regex {
 
 fn time_only_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{1,2}:").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]{1,2}:").unwrap())
 }
 
 /// Parse a matched timestamp into an instant expressed in `to_tz`.
@@ -945,7 +959,7 @@ fn zone_offset_seconds(token: &str) -> Option<i32> {
 
 fn numeric_zone_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[+-]\d{2}:?\d{2}$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[+-][0-9]{2}:?[0-9]{2}$").unwrap())
 }
 
 fn parse_numeric_offset(token: &str) -> Option<i32> {
@@ -973,23 +987,23 @@ fn resolve_zone(input: &str) -> TimeZone {
 
 fn frac_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\d{2}:\d{2}:\d{2}\.\d+").unwrap())
+    RE.get_or_init(|| Regex::new(r"[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+").unwrap())
 }
 
 fn has_seconds_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{1,2}:\d{2}:\d{2}").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]{1,2}:[0-9]{2}:[0-9]{2}").unwrap())
 }
 
 /// An hour alone, as a range's start (`9`) or with a meridiem (`9am`).
 fn hour_alone_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{1,2}(?:$| ?[AaPp])").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]{1,2}(?:$| ?[AaPp])").unwrap())
 }
 
 fn hour_minute_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{1,2}:\d{2}").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]{1,2}:[0-9]{2}").unwrap())
 }
 
 /// Rebuild the output to mirror the original match (or honor an explicit
@@ -1017,10 +1031,6 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
         format!("{}{tz}", written_clock(zoned, original, "%Y-%m-%dT"))
     } else if date_space_re().is_match(original) {
         format!("{} {abbrev}", written_clock(zoned, original, "%Y-%m-%d "))
-    } else if has_seconds_re().is_match(original) {
-        format!("{} {abbrev}", strf(zoned, "%H:%M:%S"))
-    } else if hour_minute_re().is_match(original) || hour_alone_re().is_match(original) {
-        format!("{} {abbrev}", strf(zoned, "%H:%M"))
     } else if unix_date_re().is_match(original) {
         format!(
             "{} {abbrev} {}",
@@ -1048,6 +1058,10 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
             "{} {zone}",
             strf(zoned, &format!("{weekday}{day} %b %Y %H:%M{secs}"))
         )
+    } else if has_seconds_re().is_match(original) {
+        format!("{} {abbrev}", strf(zoned, "%H:%M:%S"))
+    } else if hour_minute_re().is_match(original) || hour_alone_re().is_match(original) {
+        format!("{} {abbrev}", strf(zoned, "%H:%M"))
     } else {
         format!("{} {abbrev}", strf(zoned, "%Y-%m-%d %H:%M:%S"))
     }
@@ -1070,7 +1084,7 @@ fn written_clock(zoned: &Zoned, original: &str, date: &str) -> String {
 
 fn dated_seconds_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\S+[T ]\d{1,2}:\d{2}:\d{2}").unwrap())
+    RE.get_or_init(|| Regex::new(r"^\S+[T ][0-9]{1,2}:[0-9]{2}:[0-9]{2}").unwrap())
 }
 
 fn strf(zoned: &Zoned, fmt: &str) -> String {
@@ -1338,6 +1352,46 @@ mod tests {
         let m = matches("9-9:15am PST", "UTC", None, None, true, None);
         let originals: Vec<_> = m.iter().map(|m| m.original.as_str()).collect();
         assert_eq!(originals, ["9", "9:15am PST"]);
+    }
+
+    #[test]
+    fn a_date_or_label_is_not_the_start_of_a_range() {
+        assert_eq!(
+            range("Deadline: Friday, Apr 3 - 5pm PST"),
+            "Deadline: Friday, Apr 3 - 01:00 UTC"
+        );
+        assert_eq!(range("Due 4/3 - 5pm PST"), "Due 4/3 - 01:00 UTC");
+        assert_eq!(range("2026-04-03 - 10am"), "2026-04-03 - 17:00 UTC");
+        assert_eq!(range("Oct 1 thru 5pm"), "Oct 1 thru 00:00 UTC");
+        assert_eq!(range("Ticket #12 - 9:30am"), "Ticket #12 - 16:30 UTC");
+        assert_eq!(range("Room 7 - 3pm"), "Room 7 - 22:00 UTC");
+    }
+
+    #[test]
+    fn digits_are_ascii_digits() {
+        // Fullwidth and Arabic-Indic digits are not timestamps, and used to
+        // panic on the way through the parser.
+        let line = "Fri Sep \u{ff12}\u{ff15} 22:14:42 2026";
+        assert_eq!(
+            tr(line, "UTC"),
+            "Fri Sep \u{ff12}\u{ff15} 22:14:42 UTC 2026"
+        );
+        let line = "\u{662}\u{665} Sep 2026 22:14 GMT";
+        assert_eq!(tr(line, "UTC"), "\u{662}\u{665} Sep 2026 22:14 UTC");
+        assert!(matches("\u{ff11}\u{ff12}:30 UTC", "UTC", None, None, true, None).is_empty());
+    }
+
+    #[test]
+    fn a_named_month_date_is_not_an_hour() {
+        // "15 Apr" and "01 Aug" are not "15 am".
+        assert_eq!(
+            named("Date: 15 Apr 2026 22:14:42 -0700", "Asia/Tokyo"),
+            "Date: 16 Apr 2026 14:14:42 +0900"
+        );
+        assert_eq!(
+            named("01 Aug 2026 10:00 GMT", "Asia/Tokyo"),
+            "01 Aug 2026 19:00 JST"
+        );
     }
 
     #[test]

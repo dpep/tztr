@@ -296,6 +296,12 @@ PAYLOADS = [
   "  15:30 UTC  \n",                         # surrounding whitespace
   "15:30 UTC \xFF\xFE tail\n".b,             # invalid UTF-8 alongside a match
   "\xFF\xFE\n".b,                            # invalid UTF-8, nothing to match
+  "caf\xE9 standup 9-10am PST\n".b,          # Latin-1 byte before a bare-hour range
+  "\xFF \xC3\xA915:30 UTC\n".b,              # invalid byte, then a letter glued to a time
+  "\xFF 15:30 UTC\xC3\xA9\n".b,              # a zone glued to a letter
+  "Fri Sep ２５ 22:14:42 2026\n",            # fullwidth digits
+  "٢٥ Sep 2026 22:14 GMT\n",                 # Arabic-Indic digits
+  "１２:３０ UTC took 0:05\n",               # fullwidth time beside a duration
 ].freeze
 
 PAYLOAD_ARGS = [
@@ -613,6 +619,27 @@ add(group: "golden", args: ["-t", "sf", "missing.log"], files: {},
 
       "expected exit 1 and a message naming missing.log, got exit #{code} / #{err.inspect}"
     })
+
+# Behaviors both builds could get wrong together, pinned to an absolute answer.
+# Dateless input needs -d here so the answer doesn't depend on today.
+[
+  ["Deadline: Friday, Apr 3 - 5pm PST", "Deadline: Friday, Apr 3 - 01:00 UTC"],
+  ["Due 4/3 - 5pm PST",                 "Due 4/3 - 01:00 UTC"],
+  ["Ticket #12 - 9:30am PST",           "Ticket #12 - 17:30 UTC"],
+  ["Room 7 - 3pm PST",                  "Room 7 - 23:00 UTC"],
+  ["Standup 9-9:15am PST",              "Standup 17:00 UTC-17:15 UTC"],
+  ["Date: 15 Apr 2026 22:14:42 -0700",  "Date: 16 Apr 2026 05:14:42 +0000"],
+  ["01 Aug 2026 10:00 GMT",             "01 Aug 2026 10:00 UTC"],
+  ["Fri Sep 25 22:14:42 PDT 2026",      "Sat Sep 26 05:14:42 UTC 2026"],
+  ["11:30 PM to 12:30 AM PST",          "07:30 UTC to 08:30 UTC"],
+].each do |line, expected|
+  add(group: "golden", args: ["-t", "utc", "-d", "2026-04-03"], stdin: "#{line}\n",
+      expect: lambda { |out, _err, code|
+        next if code.zero? && out == "#{expected}\n"
+
+        "#{line.inspect}: expected #{expected.inspect}, got exit #{code} / #{out.inspect}"
+      })
+end
 
 # ==============================================================================
 # Runner

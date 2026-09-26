@@ -89,9 +89,12 @@ module Tztr
   # of a list (3:00, 4:00 or 5:00 PM).
   RANGE_JOIN = /\A[ \t]*(?:#{RANGE_WORDS})[ \t]*\z/i
   LIST_JOIN = /\A[ \t]*(?:,|(?:,[ \t]*)?(?:or|and))[ \t]*\z/i
-  # A bare hour starting a range, the 9 of "9-9:15am". Not after a letter,
-  # digit, colon or dot, so v1.9-10am stays put.
-  RANGE_HOUR = /(?:\A|[^0-9A-Za-z_:.])(?<hour>\d{1,2})[ \t]*(?:#{RANGE_WORDS})[ \t]*\z/i
+  # A bare hour starting a range, the 9 of "9-10am" or "9 to 10am": at the
+  # start of the text or after a space or "(", and hyphenated tight or joined
+  # by a word. A spaced hyphen ("Room 7 - 3pm", "Apr 3 - 5pm") is not enough.
+  RANGE_HOUR = /(?:\A|[ \t(])(?<hour>\d{1,2})(?:[-–—]|[ \t]+(?:to|until|till|through|thru)[ \t]+)\z/i
+  # A day of the month, not an hour: the 1 of "Oct 1 thru 5pm".
+  AFTER_MONTH = /\b(?:#{MONTH_ABBRS.join('|')})[a-z]*\.?[ \t]*\z/i
 
   # A timestamp found in a line: its byte offset, its text, what it is read as
   # (the text plus any zone or meridiem it shares with the end of its range or
@@ -209,11 +212,10 @@ module Tztr
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
-    line = scannable(line)
     out = line.byteslice(0, 0)
     pos = 0
 
-    timestamps(line).each do |stamp|
+    timestamps(scannable(line)).each do |stamp|
       out << line.byteslice(pos, stamp.offset - pos) << (convert_stamp(stamp, from:, to:, format:, date:) || stamp.text)
       pos = stamp.offset + stamp.text.bytesize
     end
@@ -342,6 +344,7 @@ module Tztr
 
       m = gap&.match(RANGE_HOUR)
       next [stamp] unless m && (1..12).cover?(m[:hour].to_i)
+      next [stamp] if gap.byteslice(0, m.byteoffset(:hour)[0]).match?(AFTER_MONTH)
 
       head = Stamp.new(offset: gap_start + m.byteoffset(:hour)[0], text: m[:hour], effective: "#{m[:hour]}:00", group: nil, days: 0)
       [head, stamp]
@@ -466,11 +469,12 @@ module Tztr
     earlier.strftime('%F %T') == time.strftime('%F %T') ? earlier : time
   end
 
-  # A working copy safe to scan and rewrite. Every pattern is ASCII, so a line
-  # carrying stray bytes is matched as bytes and the rest comes through
-  # untouched -- rather than killing the run on an encoding error.
+  # A UTF-8 copy safe to match against, byte for byte the same length. Each
+  # invalid byte becomes "?", which like the Rust port's reading of a stray
+  # byte is neither letter nor digit; letters around it stay letters.
   def scannable(line)
-    line.valid_encoding? ? line.dup : line.b
+    text = line.dup.force_encoding(Encoding::UTF_8)
+    text.valid_encoding? ? text : text.scrub { |bytes| '?' * bytes.bytesize }
   end
 
   def real_date?(str)
@@ -510,16 +514,16 @@ module Tztr
       time.strftime("%Y-%m-%dT#{written_clock(original)}") + tz
     when /^\d{4}-\d{2}-\d{2} /
       time.strftime("%Y-%m-%d #{written_clock(original)}") + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
-    when /^\d{1,2}:\d{2}(?::\d{2})/
-      time.strftime('%H:%M:%S') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
-    when /^\d{1,2}:\d{2}/, /\A\d{1,2}(?:\z| ?[AaPp])/
-      time.strftime('%H:%M') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     when UNIX_DATE
       time.strftime('%a %b %e %H:%M:%S ') + (time.utc? ? 'UTC' : time.strftime('%Z')) + time.strftime(' %Y')
     when RFC_DATE
       m = $~
       zone = m[:zone].start_with?('+', '-') ? time.strftime('%z') : (time.utc? ? 'UTC' : time.strftime('%Z'))
       time.strftime("#{'%a, ' if m[:weekday]}#{m[:day].length == 2 ? '%d' : '%-d'} %b %Y %H:%M#{':%S' if m[:time].count(':') == 2} ") + zone
+    when /^\d{1,2}:\d{2}(?::\d{2})/
+      time.strftime('%H:%M:%S') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
+    when /^\d{1,2}:\d{2}/, /\A\d{1,2}(?:\z| ?[AaPp])/
+      time.strftime('%H:%M') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     else
       time.strftime('%Y-%m-%d %H:%M:%S') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     end

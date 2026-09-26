@@ -157,6 +157,9 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
         expect(tr("Fri, 25 Sep 2026 22:14:42 -0700")).to eq("Sat, 26 Sep 2026 01:14:42 -0400")
         expect(tr("25 Sep 2026 22:14 PDT")).to eq("26 Sep 2026 01:14 EDT")
         expect(tr("Date: Sat, 5 Sep 2026 12:00:00 GMT", to: "UTC")).to eq("Date: Sat, 5 Sep 2026 12:00:00 UTC")
+        # "15 Apr" and "01 Aug" are not "15 am".
+        expect(tr("Date: 15 Apr 2026 22:14:42 -0700", to: "Asia/Tokyo")).to eq("Date: 16 Apr 2026 14:14:42 +0900")
+        expect(tr("01 Aug 2026 10:00 GMT", to: "Asia/Tokyo")).to eq("01 Aug 2026 19:00 JST")
       end
 
       it "reports one dated match" do
@@ -183,6 +186,15 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
         expect(tr("9 to 10am PST")).to eq("17:00 UTC to 18:00 UTC")
         expect(tr("11-1pm PST")).to eq("19:00 UTC-21:00 UTC")
         expect(Tztr.matches("9-9:15am PST", detect: true).map { |m| m[:original] }).to eq(["9", "9:15am PST"])
+      end
+
+      it "does not take a date or label for the start of a range" do
+        expect(tr("Deadline: Friday, Apr 3 - 5pm PST")).to eq("Deadline: Friday, Apr 3 - 01:00 UTC")
+        expect(tr("Due 4/3 - 5pm PST")).to eq("Due 4/3 - 01:00 UTC")
+        expect(tr("2026-04-03 - 10am")).to eq("2026-04-03 - 17:00 UTC")
+        expect(tr("Oct 1 thru 5pm")).to eq("Oct 1 thru 00:00 UTC")
+        expect(tr("Ticket #12 - 9:30am")).to eq("Ticket #12 - 16:30 UTC")
+        expect(tr("Room 7 - 3pm")).to eq("Room 7 - 22:00 UTC")
       end
 
       it "leaves other bare numbers alone" do
@@ -870,6 +882,15 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       expect(status).to be_success
       expect(out.b)
         .to eq("2026-04-03T05:00:00-07:00 \xff\xfe junk\n2026-04-03T06:00:00-07:00 ok\n".b)
+    end
+
+    it "matches a line with invalid bytes as it would a valid one" do
+      # A stray byte counts as neither letter nor digit, and letters beside it
+      # still count as letters, as in the Rust port.
+      tr = ->(line) { Tztr.translate(line.b, to: "UTC", from: "America/Los_Angeles", date: "2026-04-03").b }
+      expect(tr.("caf\xE9 standup 9-10am PST")).to eq("caf\xE9 standup 17:00 UTC-18:00 UTC".b)
+      expect(tr.("\xFF é15:30 UTC")).to eq("\xFF é15:30 UTC".b)
+      expect(tr.("\xFF 15:30 UTCé")).to eq("\xFF 22:30 UTC UTCé".b)
     end
 
     it "aborts on an unresolvable timezone" do

@@ -589,23 +589,26 @@ fn help_doc() -> Value {
 /// are rejected rather than guessed at.
 fn normalize_date(input: &str) -> Option<String> {
     use regex::Regex;
-    let input = input.trim();
-
-    // YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD — two digits, no `2026-1-5`
-    let ymd = Regex::new(r"^(\d{4})(?:[-/](\d{2})[-/](\d{2})|(\d{2})(\d{2}))$").unwrap();
+    // YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD — two digits, no `2026-1-5`, one
+    // separator throughout. Exactly Ruby's set: no trimming, single spaces.
+    let ymd = Regex::new(
+        r"^([0-9]{4})(?:-([0-9]{2})-([0-9]{2})|/([0-9]{2})/([0-9]{2})|([0-9]{2})([0-9]{2}))$",
+    )
+    .unwrap();
     if let Some(c) = ymd.captures(input) {
-        let group = |a: usize, b: usize| c.get(a).or_else(|| c.get(b));
-        return build_date(&c[1], group(2, 4)?.as_str(), group(3, 5)?.as_str());
+        let group =
+            |a: usize, b: usize, d: usize| c.get(a).or_else(|| c.get(b)).or_else(|| c.get(d));
+        return build_date(&c[1], group(2, 4, 6)?.as_str(), group(3, 5, 7)?.as_str());
     }
 
     // "Month D, YYYY" / "Mon D YYYY"
-    let mdy = Regex::new(r"(?i)^([a-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})$").unwrap();
+    let mdy = Regex::new(r"^([A-Za-z]+)\.? ([0-9]{1,2}),? ([0-9]{4})$").unwrap();
     if let Some(c) = mdy.captures(input) {
         return build_date(&c[3], &month_number(&c[1])?.to_string(), &c[2]);
     }
 
     // "D Month YYYY"
-    let dmy = Regex::new(r"(?i)^(\d{1,2})\s+([a-z]+)\.?,?\s+(\d{4})$").unwrap();
+    let dmy = Regex::new(r"^([0-9]{1,2}) ([A-Za-z]+)\.?,? ([0-9]{4})$").unwrap();
     if let Some(c) = dmy.captures(input) {
         return build_date(&c[3], &month_number(&c[2])?.to_string(), &c[1]);
     }
