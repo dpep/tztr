@@ -88,9 +88,48 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
     it "still converts bare times when nothing on the line is more specific" do
       expect(Tztr.translate("from 15:30 to 16:45", to: "UTC", from: "America/Los_Angeles", date: "2026-04-03"))
         .to eq("from 22:30 UTC to 23:45 UTC")
-      expect(Tztr.translate("3:45 PM and 16:00", to: "UTC")).to eq("15:45 UTC and 16:00 UTC")
     end
-    
+
+    it "treats a meridiem as specific enough to leave a bare time alone" do
+      expect(Tztr.translate("meeting 3:30 PM, took 0:05", to: "UTC")).to eq("meeting 15:30 UTC, took 0:05")
+    end
+
+    describe "ranges" do
+      def tr(line) = Tztr.translate(line, to: "UTC", from: "America/Los_Angeles", date: "2026-04-03")
+
+      it "gives the start of a range the zone written after its end" do
+        expect(tr("from 15:30 to 16:45 PST")).to eq("from 23:30 UTC to 00:45 UTC")
+        expect(tr("15:30-16:45 PST")).to eq("23:30 UTC-00:45 UTC")
+        expect(tr("15:30 – 16:45 JST")).to eq("06:30 UTC – 07:45 UTC")
+      end
+
+      it "gives the start the meridiem, unless that would run the range backwards" do
+        expect(tr("from 3:30 to 4:45 PM")).to eq("from 22:30 UTC to 23:45 UTC")
+        expect(tr("from 3:30 to 4:45 PM PST")).to eq("from 23:30 UTC to 00:45 UTC")
+        expect(tr("11:30 to 1:00 PM PST")).to eq("19:30 UTC to 21:00 UTC")
+        expect(tr("10:00 until 2:00 AM PST")).to eq("06:00 UTC until 10:00 UTC")
+      end
+
+      it "leaves a 24-hour start's clock alone" do
+        expect(tr("from 15:30 to 4:45 PM PST")).to eq("from 23:30 UTC to 00:45 UTC")
+      end
+
+      it "reports the shared zone for the start of a range" do
+        result = Tztr.matches("from 3:30 to 4:45 PM PST", detect: true)
+        expect(result.map { |m| [m[:original], m[:detected_tz]] }).to eq([["3:30", "PST"], ["4:45 PM PST", "PST"]])
+      end
+
+      it "only shares across a range, not a list" do
+        expect(tr("15:30, then 16:45 PST")).to eq("15:30, then 00:45 UTC")
+      end
+    end
+
+    it "reads an offset only after seconds, so a hyphenated range stays a range" do
+      expect(Tztr.translate("12:34:56-05:00", to: "UTC", date: "2026-04-03")).to eq("17:34:56 UTC")
+      expect(Tztr.translate("15:30-16:45", to: "UTC", date: "2026-04-03")).to eq("15:30 UTC-16:45 UTC")
+      expect(Tztr.translate("12:34:56-16:45", to: "UTC", date: "2026-04-03")).to eq("12:34:56 UTC-16:45 UTC")
+    end
+
     it "does not also match a shorter format inside a longer one" do
       expect(Tztr.matches("2026-04-03 12:00:00 UTC", detect: true).map { |m| m[:original] })
         .to eq(["2026-04-03 12:00:00 UTC"])

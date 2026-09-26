@@ -155,7 +155,27 @@ CORE_LINES = [
   "15:30 UTC, retry in 0:30",
   "from 15:30 to 16:45",
   "3:45 PM and 16:00",
-  "2026-04-03 12:00:00 then 09:00:00",
+"2026-04-03 12:00:00 then 09:00:00",
+"meeting 3:30 PM, took 0:05",
+
+# --- ranges share the trailing zone and meridiem; offsets need seconds
+"from 15:30 to 16:45 PST",
+"from 3:30 to 4:45 PM",
+"from 3:30 to 4:45 PM PST",
+"11:30 to 1:00 PM PST",
+"10:00 until 2:00 AM PST",
+"from 15:30 to 4:45 PM PST",
+"15:30-16:45 PST",
+"15:30 – 16:45 JST",
+"9:00 TO 5:00 p.m. CET",
+"1:00 to 2:00 to 3:00 PM",
+"15:30, then 16:45 PST",
+"3:30 PM to 4:45 PM PST",
+"3:30 PST to 4:45 PM",
+"15:30-16:45",
+"12:34:56-05:00",
+"12:34:56-16:45",
+"12:34-05:00",
 ].freeze
 
 CORE_ARGS = [

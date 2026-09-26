@@ -51,8 +51,9 @@ module Tztr
     /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?/,
     # Time with tz: 12:34:56 UTC, 12:34 PST
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{ZONE}/,
-    # Time with offset: 12:34:56+00:00
-    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2}:?\d{2}\b/,
+    # Time with offset: 12:34:56+00:00. Seconds required and the offset in range,
+    # so the hyphen of a range like 15:30-16:45 is not read as one.
+    /\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?[+-](?:0\d|1[0-4]):?[0-5]\d\b/,
     # 12-hour time: 11:30 PM, 3:45 p.m., 3:45 PM PST
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{MERIDIEM}(?: ?#{ZONE})?/,
     # Bare time: 12:34:56, 12:34
@@ -64,6 +65,15 @@ module Tztr
   # timestamp on the line converts whatever its format.
   TIMESTAMP = Regexp.union(PATTERNS)
   BARE_TIME = /\A(?:#{PATTERNS.last})\z/
+
+  # A time-only timestamp in pieces, for sharing a range's zone and meridiem.
+  TIME_PARTS = /\A(?<clock>(?<hour>\d{1,2}):\d{2}(?::\d{2}(?:\.\d+)?)?)(?: ?(?<meridiem>#{MERIDIEM}))?(?: ?(?<zone>#{ZONE}))?\z/
+  # What joins the two ends of a range: 15:30-16:45, 3:30 to 4:45 PM.
+  RANGE_JOIN = /\A[ \t]*(?:-|–|—|to|until|till|through|thru)[ \t]*\z/i
+
+  # A timestamp found in a line: where it starts, its text, and what it is read
+  # as -- the text plus any zone or meridiem it shares as the start of a range.
+  Stamp = Data.define(:offset, :text, :effective)
 
   TIMEZONE_ALIASES = {
     # UTC
@@ -177,13 +187,15 @@ module Tztr
     from = resolve_tz(from)
     ENV['TZ'] = to
     line = scannable(line)
-    skip_bare = anchored?(line.scan(TIMESTAMP))
+    out = line[0, 0]
+    pos = 0
 
-    line.gsub(TIMESTAMP) do |match|
-      next match if skip_bare && match.match?(BARE_TIME)
-
-      convert_match(match, from:, to:, format:, date:) || match
+    timestamps(line).each do |stamp|
+      out << line[pos...stamp.offset] << (convert_stamp(stamp, from:, to:, format:, date:) || stamp.text)
+      pos = stamp.offset + stamp.text.length
     end
+
+    out << line[pos..]
   end
 
   # Per-match structured analysis of a line. Returns an array of hashes, one
@@ -194,14 +206,14 @@ module Tztr
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
-    timestamps(scannable(line)).map do |match|
+    timestamps(scannable(line)).map do |stamp|
       info = {
         # Patterns only ever match ASCII, whatever the rest of the line is.
-        original: match.force_encoding(Encoding::UTF_8),
-        detected_format: detect_format(match),
-        detected_tz: detect_zone(match),
+        original: stamp.text.dup.force_encoding(Encoding::UTF_8),
+        detected_format: detect_format(stamp.text),
+        detected_tz: detect_zone(stamp.effective),
       }
-      info[:translated] = convert_match(match, from:, to:, format:, date:) unless detect
+      info[:translated] = convert_stamp(stamp, from:, to:, format:, date:) unless detect
       info
     end
   end
@@ -211,27 +223,61 @@ module Tztr
   # whether or not it names its own; without a zone as well, the source zone
   # comes from $TZ too.
   def assumptions(line)
-    dateless = timestamps(scannable(line)).select { |match| detect_format(match) == 'time' }
+    dateless = timestamps(scannable(line)).map(&:effective).select { |match| detect_format(match) == 'time' }
     return [] if dateless.empty?
     return %i[date zone] if dateless.any? { |match| detect_zone(match).nil? }
 
     [:date]
   end
 
-  # A bare time beside a timestamp that names its date or zone is most likely a
-  # duration ("took 0:05"): that zone belongs to the timestamp naming it.
+  # The timestamps in a line, in order. A bare time beside one that names a
+  # date, zone or meridiem is most likely a duration ("took 0:05"), and is left
+  # out: that zone belongs to the timestamp naming it.
   def timestamps(line)
-    found = line.scan(TIMESTAMP)
-    anchored?(found) ? found.grep_v(BARE_TIME) : found
+    stamps = []
+    line.scan(TIMESTAMP) { stamps << Stamp.new(offset: $~.begin(0), text: $~[0], effective: $~[0]) }
+    stamps = share_range_qualifiers(line, stamps)
+    return stamps if stamps.all? { |stamp| stamp.effective.match?(BARE_TIME) }
+
+    stamps.reject { |stamp| stamp.effective.match?(BARE_TIME) }
   end
 
-  def anchored?(found)
-    found.any? { |match| detect_format(match) != 'time' || detect_zone(match) }
+  # The start of a range takes the zone and meridiem written after its end:
+  # "3:30 to 4:45 PM PST" starts at 3:30 PM PST. Walked backwards, so a chain of
+  # ranges passes them all the way down.
+  def share_range_qualifiers(line, stamps)
+    (stamps.length - 2).downto(0) do |i|
+      head, tail = stamps[i], stamps[i + 1]
+      gap = line[(head.offset + head.text.length)...tail.offset].dup.force_encoding(Encoding::UTF_8)
+      next unless gap.valid_encoding? && gap.match?(RANGE_JOIN)
+
+      stamps[i] = head.with(effective: range_start(head.text, tail.effective))
+    end
+    stamps
   end
 
-  def convert_match(match, from:, to:, format:, date: nil)
-    time = parse(match, from:, to:, date:)
-    format_time(time.localtime, format, match)
+  def range_start(head, tail)
+    h = head.match(TIME_PARTS)
+    t = tail.match(TIME_PARTS)
+    return head unless h && t && h[:zone].nil?
+
+    [h[:clock], h[:meridiem] || shared_meridiem(h[:hour].to_i, t), t[:zone]].compact.join(' ')
+  end
+
+  # The end's meridiem, unless that would run the range backwards: 11:30 to
+  # 1:00 PM starts in the morning. A 24-hour start takes none.
+  def shared_meridiem(hour, tail)
+    return unless tail[:meridiem] && (1..12).cover?(hour)
+
+    pm = tail[:meridiem].start_with?('P', 'p')
+    pm = !pm if hour % 12 > tail[:hour].to_i % 12
+    pm ? 'PM' : 'AM'
+  end
+
+  # Parsed as its effective reading, formatted to mirror what was written.
+  def convert_stamp(stamp, from:, to:, format:, date:)
+    time = parse(stamp.effective, from:, to:, date:)
+    format_time(time.localtime, format, stamp.text)
   rescue ArgumentError
     nil
   end

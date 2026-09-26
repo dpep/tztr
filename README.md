@@ -78,7 +78,13 @@ Input is plain text, so JSON and NDJSON work too. Every timestamp on a line
 converts, whatever its format, and everything around it, including quotes,
 passes through untouched. One exception: a bare time like `0:05`, with no
 date, zone or AM/PM, is left alone when another timestamp on the same line
-names a date or zone, since it is most likely a duration (`...Z took 0:05`).
+names any of those, since it is most likely a duration (`...Z took 0:05`).
+
+A range shares the zone and AM/PM written at its end. `from 3:30 to 4:45 PM PST`
+converts both ends as PST afternoon times, and `11:30 to 1:00 PM` starts in
+the morning. The two ends can be joined by `-`, `–`, `to`, `until` or `through`.
+A time with a UTC offset needs seconds (`12:34:56-05:00`), so `15:30-16:45` is
+read as a range.
 
 Zone abbreviations inside text are recognized in uppercase (`PST`) or
 lowercase (`pst`), but not mixed case. Six are uppercase only, because
