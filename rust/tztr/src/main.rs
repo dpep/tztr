@@ -17,7 +17,7 @@ use tztr::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const HELP: &str = "\
-Usage: tztr [options] [file]
+Usage: tztr [options] [file | now]
 
 Timezone Translator - convert timestamps between timezones. Reads from stdin or file.
 
@@ -45,7 +45,8 @@ Examples:
   echo '15:30 UTC' | tztr -t pst -j
   tail -f app.log | tztr -t nyc -J
   echo '2026-04-03T12:00:00Z' | tztr --detect -j
-  echo '15:30' | tztr -f pacific -t utc -d 2026-01-15";
+  echo '15:30' | tztr -f pacific -t utc -d 2026-01-15
+  tztr now -t tokyo";
 
 struct Options {
     from: Option<String>,
@@ -236,7 +237,7 @@ fn run() -> Result<ExitCode, String> {
         None => None,
     };
 
-    let opts = Options {
+    let mut opts = Options {
         from,
         from_is_implicit,
         to,
@@ -264,7 +265,20 @@ fn run() -> Result<ExitCode, String> {
         );
     }
 
-    if opts.files.is_empty() && io::stdin().is_terminal() {
+    // `tztr now`: the current time, read as though piped in, so every flag applies.
+    let now = (opts.files == ["now"]).then(|| {
+        jiff::Timestamp::now()
+            .strftime("%Y-%m-%dT%H:%M:%SZ\n")
+            .to_string()
+    });
+    if now.is_some() {
+        if opts.inplace {
+            return Err("-i cannot be combined with now".to_string());
+        }
+        opts.files.clear();
+    }
+
+    if opts.files.is_empty() && now.is_none() && io::stdin().is_terminal() {
         println!("{HELP}");
         return Ok(ExitCode::SUCCESS);
     }
@@ -273,7 +287,7 @@ fn run() -> Result<ExitCode, String> {
         return run_inplace(&opts);
     }
 
-    run_stream(&opts, json_mode)
+    run_stream(&opts, json_mode, now.as_deref())
 }
 
 fn run_inplace(opts: &Options) -> Result<ExitCode, String> {
@@ -321,7 +335,7 @@ struct Sink<W: Write> {
     disclosed: Disclosed,
 }
 
-fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
+fn run_stream(opts: &Options, json_mode: bool, now: Option<&str>) -> Result<ExitCode, String> {
     let stdout = io::stdout();
     let mut sink = Sink {
         out: stdout.lock(),
@@ -331,7 +345,12 @@ fn run_stream(opts: &Options, json_mode: bool) -> Result<ExitCode, String> {
 
     let mut failed = false;
     (|| -> Result<(), String> {
-        if opts.files.is_empty() {
+        if let Some(now) = now {
+            for_each_line(now.as_bytes(), |line| {
+                handle_line(opts, json_mode, line, &mut sink)
+            })
+            .map_err(|e| e.to_string())?;
+        } else if opts.files.is_empty() {
             let stdin = io::stdin();
             for_each_line(stdin.lock(), |line| {
                 handle_line(opts, json_mode, line, &mut sink)
@@ -551,7 +570,7 @@ fn help_doc() -> Value {
     json!({
         "name": "tztr",
         "version": VERSION,
-        "usage": "tztr [options] [file]",
+        "usage": "tztr [options] [file | now]",
         "summary": "Timezone Translator - convert timestamps between timezones. Reads from stdin or file.",
         "options": [
             {"short": "-f", "long": "--from", "arg": "TZ", "description": "Input timezone (default: auto-detect)"},
@@ -578,7 +597,8 @@ fn help_doc() -> Value {
             "echo '15:30 UTC' | tztr -t pst -j",
             "tail -f app.log | tztr -t nyc -J",
             "echo '2026-04-03T12:00:00Z' | tztr --detect -j",
-            "echo '15:30' | tztr -f pacific -t utc -d 2026-01-15"
+            "echo '15:30' | tztr -f pacific -t utc -d 2026-01-15",
+            "tztr now -t tokyo"
         ]
     })
 }

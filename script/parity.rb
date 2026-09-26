@@ -67,8 +67,10 @@ RUST_CMD = [RUST_BIN].freeze
 # expect  - optional ->(stdout, stderr, exitstatus) checked against both binaries
 CASES = []
 
-def add(group:, args: [], stdin: "", tz: "UTC", files: nil, dirs: nil, expect: nil)
-  CASES << { group: group, args: args, stdin: stdin, tz: tz, files: files, dirs: dirs, expect: expect }
+# compare: false skips the byte-for-byte stdout diff, for output that depends
+# on the clock (`tztr now`); expect: then carries the whole check.
+def add(group:, args: [], stdin: "", tz: "UTC", files: nil, dirs: nil, expect: nil, compare: true)
+  CASES << { group: group, args: args, stdin: stdin, tz: tz, files: files, dirs: dirs, expect: expect, compare: compare }
 end
 
 # ==============================================================================
@@ -198,6 +200,9 @@ CORE_LINES = [
   "15:30 Pst",
   "3:30 to 4:45 PM Pst",
   "15:30 Utc and 16:00 utc",
+  "um 15:30 Ist das",
+  "12:00 Mt. Everest",
+  "15:30 Et al",
 
   # --- named-month dates: date(1)/ctime and RFC 2822
   "Fri Sep 25 22:14:42 PDT 2026",
@@ -423,6 +428,12 @@ end
 # ==============================================================================
 
 ERROR_ARGS = [
+  # a tzdb file that is not a zone
+  ["-t", "leapseconds"],
+  ["-t", "+VERSION"],
+  # -d exactly as Ruby takes it: no trimming, single spaces
+  ["-d", " 2026-01-05"],
+  ["-d", "2026-01/05"],
   # unknown / malformed option
   ["-z"],
   ["--bogus"],
@@ -704,6 +715,31 @@ end
       })
 end
 
+# `tztr now` reads the clock, so each build's answer is checked on its own:
+# an ISO timestamp in the right zone, within a few seconds of now.
+[
+  [["now"],                         /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n\z/],
+  [["now", "-t", "tokyo"],          /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+09:00\n\z/],
+  [["now", "-t", "tokyo", "-F", "short"], /\A\d{4}-\d{2}-\d{2} \d{2}:\d{2} JST\n\z/],
+  [["now", "-J"],                   /\A\{"original":"[^"]+Z","detected_format":"iso","detected_tz":"Z","translated":"[^"]+Z"\}\n\z/],
+  [["now", "--detect"],             /\A\S+Z\tiso\tZ\n\z/],
+].each do |args, shape|
+  add(group: "golden", args: args, compare: false,
+      expect: lambda { |out, _err, code|
+        stamp = out[/\A\S+/]
+        fresh = Time.now - Time.parse(stamp.to_s) rescue nil
+        next if code.zero? && out.match?(shape) && (args.include?("-F") || args.include?("-J") || (fresh && fresh.abs < 10))
+
+        "#{args.inspect}: got exit #{code} / #{out.inspect}"
+      })
+end
+add(group: "golden", args: ["-i", "now"],
+    expect: lambda { |_out, err, code|
+      next if code == 1 && err == "tztr: -i cannot be combined with now\n"
+
+      "expected the -i refusal, got exit #{code} / #{err.inspect}"
+    })
+
 # ==============================================================================
 # Runner
 # ==============================================================================
@@ -746,7 +782,7 @@ def check(kase, index, scratch)
   rs = run(RUST_CMD, kase, rs_dir)
 
   problems = []
-  problems << "stdout" unless rb[0] == rs[0]
+  problems << "stdout" unless rb[0] == rs[0] || !kase[:compare]
   problems << "stderr" unless rb[1] == rs[1]
   problems << "exit"   unless rb[2] == rs[2]
   problems << "files"  unless rb[3] == rs[3]

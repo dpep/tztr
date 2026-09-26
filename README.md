@@ -5,7 +5,8 @@ tztr
 
 Timezone Translator - convert timestamps to local time.
 
-Reads from stdin or file, auto-detects timestamp formats, and preserves the original format by default.
+Reads from stdin, files, or the clock (`tztr now`), auto-detects timestamp
+formats, and preserves the original format by default.
 
 
 ## Install
@@ -25,7 +26,14 @@ echo '15:30 UTC' | tztr -t America/New_York
 # 11:30 EDT   (a time with no date resolves against today; in January, 10:30 EST)
 
 tail -f app.log | tztr
+
+tztr now -t tokyo
+# 2026-09-26T23:45:04+09:00
 ```
+
+`now` is the current time, read as though it were piped in, so every flag
+works with it (`-F short`, `-j`, `--detect`). It prints ISO 8601 in `-t`,
+else `$TZ`, else UTC. To read a file named `now`, write `./now`.
 
 Several files are processed in order. A file that can't be read is reported
 and skipped, the rest still run (and with `-i`, are still rewritten), and
@@ -69,34 +77,49 @@ echo '15:30 UTC' | tztr -t Mars/Phobos
 ### Supported Formats
 
 - ISO 8601: `2026-04-03T12:00:00Z`, `2026-04-03T12:00:00+05:30`
-- Date + time: `2026-04-03 12:00:00 UTC`
-- date(1) output: `Fri Sep 25 22:14:42 PDT 2026` (zone optional, as ctime writes it)
+- Date + time: `2026-04-03 12:00:00 UTC`, `2026/04/03 12:00:00` (Go's log
+  package, nginx's error log)
+- date(1) output: `Fri Sep 25 22:14:42 PDT 2026`, and the shapes around it:
+  no zone (ctime), no weekday (`ls -lT`), a numeric zone (`+03`), and glibc's
+  locale forms (`Fri 25 Sep 2026 10:14:42 PM PDT`). A zone tztr doesn't know
+  (`WIB`) leaves the whole date as written, rather than half-converting it.
 - Email and HTTP dates (RFC 2822): `Fri, 25 Sep 2026 22:14:42 -0700`
+- nginx/Apache access logs: `[15/Jan/2015:12:31:01 -0700]`
 - Time only: `15:30 UTC`, `08:30:45 PDT`
 - 12-hour: `11:30 PM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`
 - Hour only, with AM/PM: `9am`, `9 PM PST`. A bare hour with no AM/PM is just a
-  number, except as the start of a range whose end has one (`9-9:15am`).
-- Fractional seconds: `2026-04-03T12:00:00.123Z`
+  number, except as the start of a range whose end has one: `9-9:15am` or
+  `9 to 10am`, but not `Room 7 - 3pm` or `Apr 3 - 5pm`.
+- Fractional seconds, every digit kept: `2026-04-03T12:00:00.123456789Z`, and
+  Python logging's comma milliseconds, `2026-04-03 12:00:00,123`
+
+Seconds are optional in every dated format (`2026-04-03 15:30`,
+`2026-04-03T15:30Z`), and the output keeps them only if the input had them.
 
 Input is plain text, so JSON and NDJSON work too. Every timestamp on a line
 converts, whatever its format, and everything around it, including quotes,
 passes through untouched. One exception: a bare time like `0:05`, with no
 date, zone or AM/PM, is left alone when another timestamp on the same line
 names any of those, since it is most likely a duration (`...Z took 0:05`).
-The check only looks at the line itself: a duration alone on its line
-(`request took 0:05`) is indistinguishable from a time and converts as one.
+A time followed by a unit of time is a duration too, and left alone:
+`Finished in 1:05 minutes`, `took 2:30 hrs` (`sec`, `min`, `hr`, `hour`,
+spelled out or plural). Otherwise a duration alone on its line
+(`request took 0:05`) can't be told from a time, and converts as one.
 
 A range or list shares the zone and AM/PM written at its end.
 `from 3:30 to 4:45 PM PST` converts both ends as PST afternoon times,
 `3:00, 4:00 or 5:00 PM PST` converts all three, and `11:30 to 1:00 PM` starts
 in the morning. A range is joined by `-`, `–`, `—`, `to`, `until`, `till`,
 `through` or `thru`; a list by commas, `or` and `and`. Any other word in
-between (`15:30, then 16:45 PST`) keeps the two apart. The zone travels from
-the end back to the start, never forward: in `3:30 PST to 4:45 PM`, the end
-takes your default zone.
+between keeps the two apart: in `15:30, then 16:45 PST`, the `15:30` is left
+unconverted, as a bare time beside one that names its zone. The zone travels
+from the end back to the start, never forward: in `3:30 PST to 4:45 PM`, the
+end takes your default zone. A range whose start carries a date shares it with
+the end: `2026-04-03 9:00 AM - 10:00 AM PST`.
 
-A time with a UTC offset needs seconds (`12:34:56-05:00`), so `15:30-16:45` is
-read as a range.
+A numeric offset glued to a time needs seconds (`12:34:56-05:00`,
+`12:34:56-0500`), so `15:30-16:45` and `15:30-1645` are read as ranges; with a
+space it needs none (`12:00 +0530`). Offsets outside -12..+14 are not offsets.
 
 In a range or list with no date, a member that is earlier on the clock than
 the one before it is on the next day. The preserved format shows only the
@@ -108,8 +131,7 @@ echo '11:30 PM to 12:30 AM PST' | tztr -t utc -d 2026-04-03 -F iso
 ```
 
 A date, time and zone are read together only when they are written together,
-in one of the formats above. Seconds are optional in every dated format
-(`2026-04-03 15:30`, `2026-04-03T15:30Z`). A date in another column
+in one of the formats above. A date in another column
 (`2026-12-31 | 23:30:00 | UTC`), a syslog date with no year
 (`Sep 25 22:14:42`), or a word like `tomorrow` is not attached to the time
 beside it, which converts as a time alone.
@@ -119,12 +141,17 @@ lowercase (`pst`), but not mixed case. Six are uppercase only, because
 their lowercase spellings are ordinary words that can follow a time:
 `est`, `cet`, `et`, `ist`, `ut` and `z`. In `à 15:30 est annulée`, `est` is
 French for "is", not Eastern time. `-v` says when it passed over a mixed-case
-one:
+one (among its other notes):
 
 ```bash
 echo '15:30 Pst' | tztr -v
 # tztr: ignored "Pst": a zone abbreviation is matched in all uppercase or all lowercase
 ```
+
+An abbreviation that names standard or daylight time is that fixed offset,
+whatever the date: `CEST` is +02:00 even in January, `PST` is -08:00 even in
+July. The generic `ET`, `CT`, `MT` and `PT` follow DST, as do the same names
+given to `-f` and `-t` (`-t est` is New York time).
 
 ### JSON output (for agents & scripts)
 
@@ -187,8 +214,9 @@ echo '2026-04-03T12:00:00Z' | tztr
 
 A time-only input carries no date, so a DST-observing zone on either side of
 the conversion can't tell whether it was standard or daylight time. `tztr`
-resolves it against **today's** date — which can be off by an hour for a
-timestamp from the other side of a DST boundary:
+resolves it against **today's** date where the time was written (in the zone
+it names, else the source zone), which can be off by an hour for a timestamp
+from the other side of a DST boundary:
 
 ```bash
 echo '15:30' | tztr -f pacific -t utc
@@ -200,7 +228,7 @@ echo '15:30' | tztr -f pacific -t utc
 ```bash
 echo '15:30' | tztr -f pacific -t utc -v
 # tztr: from=America/Los_Angeles to=UTC
-# tztr: no -d given, assuming 2026-09-16 for DST resolution   (whatever today is)
+# tztr: no -d given, assuming 2026-09-26 for DST resolution   (whatever today is)
 # 22:30 UTC
 ```
 

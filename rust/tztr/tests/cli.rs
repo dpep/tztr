@@ -823,3 +823,44 @@ fn treats_an_empty_tz_as_unset() {
     assert!(o.ok, "{}", o.stderr);
     assert_eq!(o.out().trim_end(), "2026-04-03T12:00:00Z");
 }
+
+// --- `tztr now` ---------------------------------------------------------------
+
+#[test]
+fn now_prints_the_current_time_in_iso_8601() {
+    let o = run_tz(b"", &["now"], None);
+    assert!(o.ok, "{}", o.stderr);
+    let out = o.out().trim_end();
+    let when: jiff::Timestamp = out.parse().expect("ISO 8601");
+    let drift = jiff::Timestamp::now().duration_since(when).as_secs().abs();
+    assert!(out.ends_with('Z') && drift < 5, "{out}");
+
+    let o = run_tz(b"", &["now"], Some("America/Los_Angeles"));
+    let out = o.out().trim_end();
+    assert!(out.ends_with("-07:00") || out.ends_with("-08:00"), "{out}");
+}
+
+#[test]
+fn now_works_with_every_output_flag() {
+    let o = run_tz(b"", &["now", "-t", "tokyo", "-F", "short"], None);
+    assert!(o.out().trim_end().ends_with(" JST"), "{}", o.out());
+    let o = run_tz(b"", &["now", "-t", "tokyo", "-j"], None);
+    let v: serde_json::Value = serde_json::from_str(o.out()).unwrap();
+    assert!(v[0]["translated"].as_str().unwrap().ends_with("+09:00"));
+    let o = run_tz(b"", &["now", "--detect"], None);
+    assert!(o.out().trim_end().ends_with("\tiso\tZ"), "{}", o.out());
+    assert_eq!(
+        fails("", &["-i", "now"]),
+        "tztr: -i cannot be combined with now"
+    );
+}
+
+#[test]
+fn verbose_does_not_flag_a_capitalized_word() {
+    let o = run_tz(
+        b"um 15:30 Ist das\n12:00 Mt. Everest\n15:30 Et al\n",
+        &["-v", "-d", "2026-04-03"],
+        None,
+    );
+    assert!(!o.stderr.contains("ignored"), "{}", o.stderr);
+}

@@ -930,6 +930,38 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       expect(err).to be_empty
     end
 
+    describe "now" do
+      it "prints the current time as ISO 8601 in $TZ, else UTC" do
+        out = run("", "now")
+        expect(out).to match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/)
+        expect(Time.parse(out)).to be_within(5).of(Time.now)
+
+        la = run("", "now", env: { "TZ" => "America/Los_Angeles" })
+        expect(la).to match(/-0[78]:00\z/)
+      end
+
+      it "works with every output flag" do
+        expect(run("", "now", "-t", "tokyo", "-F", "short")).to match(/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2} JST\z/)
+        expect(JSON.parse(run("", "now", "-t", "tokyo", "-j")).first["translated"]).to match(/\+09:00\z/)
+        expect(JSON.parse(run("", "now", "-J")).keys).to include("original", "translated")
+        expect(run("", "now", "--detect")).to match(/\tiso\tZ\z/)
+      end
+
+      it "can't be edited in place" do
+        expect(run_fail("-i", "now")).to eq("tztr: -i cannot be combined with now")
+      end
+    end
+
+    it "says nothing about a capitalized word that happens to spell a zone" do
+      _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-v", "-d", "2026-04-03",
+                               stdin_data: "um 15:30 Ist das\n12:00 Mt. Everest\n15:30 Et al\n")
+      expect(err).not_to include("ignored")
+    end
+
+    it "rejects a file under zoneinfo that is not a zone" do
+      expect(run_fail("-t", "leapseconds", input: "15:30 UTC")).to eq("tztr: unknown timezone: leapseconds")
+    end
+
     it "says nothing about assumptions it did not make" do
       _, err, = Open3.capture3(
         { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", "-f", "utc", "-d", "2026-01-15",

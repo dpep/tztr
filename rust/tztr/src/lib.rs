@@ -744,7 +744,11 @@ pub fn ignored_zones(line: &[u8]) -> Vec<String> {
         };
         let token = ascii(&c[1]);
         let mixed = token != token.to_uppercase() && token != token.to_lowercase();
+        // Capitalized words first: "Ist" (German "is"), "Est", "Cet". Two-letter
+        // ones ("Mt.", "Et al") are never flagged.
+        let word = WORD_ABBREVIATIONS.contains(&token.to_uppercase().as_str());
         if mixed
+            && !word
             && ZONE_ABBREVIATIONS.contains(&token.to_uppercase().as_str())
             && !tokens.iter().any(|t| t == token)
         {
@@ -756,7 +760,7 @@ pub fn ignored_zones(line: &[u8]) -> Vec<String> {
 
 fn trailing_word_re() -> &'static BytesRegex {
     static RE: OnceLock<BytesRegex> = OnceLock::new();
-    RE.get_or_init(|| BytesRegex::new(r"^ ?([A-Za-z]{2,4})\b").unwrap())
+    RE.get_or_init(|| BytesRegex::new(r"^ ?([A-Za-z]{3,4})\b").unwrap())
 }
 
 /// Per-match structured analysis of a line. With `detect`, translation is

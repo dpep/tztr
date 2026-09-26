@@ -39,21 +39,21 @@ is a word likely to follow a time (`WORD_ABBREVIATIONS`: French `est`/`cet`/`et`
 German `ist`, plus `ut` and `z`). Mixed case never matches. A lowercase match
 resolves exactly as its uppercase form: `pst` is a fixed −08:00 like `PST`.
 
-How a detected abbreviation resolves depends on which half it came from:
-
-- The native ones are **fixed offsets** — `PST` is always −08:00, whatever the
-  date, because that is what `Time.parse` does.
-- The rest resolve **through the alias table to a real zone**, so they carry DST
-  rules: `15:30 CET` is 14:30 UTC in January and 13:30 UTC in July.
+Every abbreviation that names standard or daylight time is a **fixed offset**
+(`ZONE_OFFSETS` / `zone_offset_seconds`): `PST` is always −08:00 and `CEST`
+always +02:00, whatever the date, as `Time.parse` always read the US ones.
+Only the generic `ET`, `CT`, `MT` and `PT` resolve **through the alias table
+to a real zone**, so they follow DST.
 
 ## Quirks replicated for parity
 
 - **`from` is bypassed when an embedded zone is present**, matching Ruby's
   branch order. `-f pst` has no effect on `12:00 JST`.
-- **"Today" fills date-less inputs**, taken in the zone the timestamp is
-  expressed in. This is the documented DST caveat for time-only inputs;
-  `-d/--date` supplies the missing date, and `-v` now says out loud when the
-  assumption is being made.
+- **"Today" fills date-less inputs**, taken where the timestamp was written:
+  the zone it names, else the source zone. Both implementations compute it
+  explicitly per timestamp (Ruby's `today_where`, Rust's `anchor`) rather than
+  leaving it to `Time.parse`, so a range's rolled end shares its start's date
+  and `-v` names the date actually used. `-d/--date` supplies it instead.
 - **Ambiguous wall-clock times take the earlier occurrence.** A repeated hour at
   a DST fall-back resolves to the daylight side — jiff's `compatible`
   disambiguation, which also matches macOS `date(1)`, Temporal, RFC 5545 and

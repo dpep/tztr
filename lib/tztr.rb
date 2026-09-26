@@ -241,7 +241,11 @@ module Tztr
   def known_zone?(name)
     return false unless name.match?(%r{\A[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*\z})
 
-    ZONEINFO_DIRS.any? { |dir| File.file?(File.join(dir, name)) }
+    # A zone file, not the tzdb's other files beside them (leapseconds, +VERSION).
+    ZONEINFO_DIRS.any? do |dir|
+      path = File.join(dir, name)
+      File.file?(path) && File.binread(path, 4) == 'TZif'
+    end
   end
 
   def translate(line, to: 'UTC', from: nil, format: nil, date: nil)
@@ -286,8 +290,11 @@ module Tztr
     line = scannable(line)
     tokens = []
     line.scan(TIMESTAMP) do
-      token = $~.post_match[/\A ?([A-Za-z]{2,4})\b/, 1]
+      token = $~.post_match[/\A ?([A-Za-z]{3,4})\b/, 1]
       next unless token && token != token.upcase && token != token.downcase
+      # Capitalized words first: "Ist" (German "is"), "Est", "Cet". Two-letter
+      # ones ("Mt.", "Et al") are never flagged.
+      next if WORD_ABBREVIATIONS.include?(token.upcase)
 
       tokens << token if ZONE_ABBREVIATIONS.include?(token.upcase)
     end
