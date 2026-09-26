@@ -226,6 +226,29 @@ CORE_LINES = [
   "22:00-02:00 UTC",
   "9:00 to 17:00 UTC",
   "23:00 to 01:00 to 03:00",
+
+  # --- fixed abbreviations, dated starts, single-digit hours, glued offsets
+  "15:30 CET",
+  "15:30 CEST",
+  "15:30 BST",
+  "15:30 AEDT",
+  "15:30 PT",
+  "2026-07-15 15:30 CET",
+  "2026-04-03 9:00 AM - 10:00 AM PST",
+  "2026-04-03 15:30 - 16:30",
+  "2026-04-03 23:00 - 01:00",
+  "2026-04-03T12:00:00Z - 13:00",
+  "2026-01-15 9:00 UTC",
+  "2026-01-15T9:00:00Z",
+  "15:30-1645",
+  "12:00+0530",
+  "12:00 +0530",
+  "12:00:00-14:59",
+  "12:00:00+14:00",
+  "2026-04-03 12:00:00 -1645",
+  "2026-09-25 99:14:42 PDT",
+  "99am",
+  "Fri Sep 25 25:14:42 PDT 2026",
 ].freeze
 
 CORE_ARGS = [
@@ -258,6 +281,7 @@ CORE_ARGS = [
   ["-tsf"],                            # value attached to a bundled flag
   ["-vj"],
   ["-v", "-t", "utc"],                 # stderr disclosure
+  ["--detect", "-v"],                  # detection assumes nothing
   ["-v", "-f", "utc", "-t", "pst"],    # explicit -f => startup line, no disclosure
   # -F crossed with the structured modes (CLAUDE.md: every option must work in -j/-J)
   ["-F", "short", "-t", "utc", "-j"],
@@ -638,6 +662,18 @@ add(group: "golden", args: ["-t", "sf", "missing.log"], files: {},
         next if code.zero? && out == "#{expected}\n"
 
         "#{line.inspect}: expected #{expected.inspect}, got exit #{code} / #{out.inspect}"
+      })
+end
+
+# With no -d, a range past midnight is an hour long whichever zone's "today"
+# it was read in -- the answer depends on the clock, so assert the length.
+[["-t", "14"], ["-t", "-12"], ["-t", "tokyo"]].each do |args|
+  add(group: "golden", args: [*args, "-F", "iso"], stdin: "11:30 PM to 12:30 AM PST\n",
+      expect: lambda { |out, _err, code|
+        start, finish = out.chomp.split(" to ").map { |t| Time.parse(t) rescue nil }
+        next if code.zero? && start && finish && finish - start == 3600
+
+        "#{args.inspect}: expected a one-hour range, got #{out.inspect}"
       })
 end
 

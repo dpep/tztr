@@ -33,7 +33,22 @@ module Tztr
 
   # Longest first, so UTC is not read as UT.
   ABBREVIATION = Regexp.union(ZONE_SPELLINGS.sort_by { |abbr| [-abbr.length, abbr] })
-  ZONE = /(?:#{ABBREVIATION})\b|[+-]\d{4}\b/
+  # A numeric offset within the -12..+14 real zones occupy.
+  NUM_OFFSET = /[+-](?:0\d|1[0-3])[0-5]\d\b|[+-]1400\b/
+  ZONE = /(?:#{ABBREVIATION})\b|#{NUM_OFFSET}/
+
+  # The offset each abbreviation names. Standard and daylight ones are fixed
+  # whatever the date -- CEST is +02:00 even in January -- as Time.parse reads
+  # the US ones. Only the generic ET, CT, MT and PT follow DST.
+  ZONE_OFFSETS = {
+    'UTC' => '+00:00', 'GMT' => '+00:00', 'UT' => '+00:00', 'Z' => '+00:00',
+    'EST' => '-05:00', 'EDT' => '-04:00', 'CST' => '-06:00', 'CDT' => '-05:00',
+    'MST' => '-07:00', 'MDT' => '-06:00', 'PST' => '-08:00', 'PDT' => '-07:00',
+    'HST' => '-10:00', 'AKST' => '-09:00', 'AKDT' => '-08:00',
+    'CET' => '+01:00', 'CEST' => '+02:00', 'BST' => '+01:00', 'IST' => '+05:30',
+    'JST' => '+09:00', 'KST' => '+09:00', 'HKT' => '+08:00',
+    'AEST' => '+10:00', 'AEDT' => '+11:00', 'NZST' => '+12:00', 'NZDT' => '+13:00',
+  }.freeze
   # A dotted meridiem takes its closing dot; an undotted one leaves a
   # following full stop to the sentence.
   MERIDIEM = /[AaPp](?:\.[Mm]\.|\.?[Mm]\b)/
@@ -54,20 +69,21 @@ module Tztr
     # RFC 2822
     /\b(?:#{DAY}, )?\d{1,2} #{MON} \d{4} \d{2}:\d{2}(?::\d{2})? (?:[+-]\d{4}\b|(?:#{ABBREVIATION})\b)/,
     # ISO 8601 with Z or offset: 2026-04-03T12:34:56Z, 2026-04-03T12:34:56.123+00:00
-    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})/,
+    /\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})/,
     # ISO 8601 without timezone: 2026-04-03T12:34:56
-    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?/,
+    /\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?/,
     # Date space 12-hour time: 2026-04-03 03:45:00 PM, 2026-04-03 03:45 PM PST
     /\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{MERIDIEM}(?: ?#{ZONE})?/,
     # Date space time with tz: 2026-04-03 12:34:56 UTC
-    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{ZONE}/,
+    /\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{ZONE}/,
     # Date space time: 2026-04-03 12:34:56
-    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?/,
-    # Time with tz: 12:34:56 UTC, 12:34 PST
-    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{ZONE}/,
+    /\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?/,
+    # Time with tz: 12:34:56 UTC, 12:34 PST, 12:34 +0530. A numeric offset
+    # glued to the clock needs seconds, or 15:30-1645 would read as one.
+    /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)? ?#{ZONE}| ?(?:#{ABBREVIATION})\b| #{NUM_OFFSET})/,
     # Time with offset: 12:34:56+00:00. Seconds required and the offset in range,
     # so the hyphen of a range like 15:30-16:45 is not read as one.
-    /\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?[+-](?:0\d|1[0-4]):?[0-5]\d\b/,
+    /\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?[+-](?:(?:0\d|1[0-3]):?[0-5]\d|14:?00)\b/,
     # 12-hour time: 11:30 PM, 3:45 p.m., 3:45 PM PST
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{MERIDIEM}(?: ?#{ZONE})?/,
     # Hour with a meridiem: 9am, 9 PM PST
@@ -235,7 +251,7 @@ module Tztr
       info = {
         # Patterns only ever match ASCII, whatever the rest of the line is.
         original: stamp.text.dup.force_encoding(Encoding::UTF_8),
-        detected_format: detect_format(stamp.effective),
+        detected_format: detect_format(reading(stamp.text)),
         detected_tz: detect_zone(stamp.effective),
       }
       info[:translated] = convert_stamp(stamp, from:, to:, format:, date:) unless detect
@@ -263,11 +279,11 @@ module Tztr
   # whether or not it names its own; without a zone as well, the source zone
   # comes from $TZ too.
   def assumptions(line)
-    dateless = timestamps(scannable(line)).map(&:effective).select { |match| detect_format(match) == 'time' }
-    return [] if dateless.empty?
-    return %i[date zone] if dateless.any? { |match| detect_zone(match).nil? }
-
-    [:date]
+    readings = timestamps(scannable(line)).map(&:effective)
+    [
+      (:zone if readings.any? { |time| detect_zone(time).nil? }),
+      (:date if readings.any? { |time| time_only?(time) }),
+    ].compact
   end
 
   # The timestamps in a line, in order. A bare time beside one that names a
@@ -277,36 +293,50 @@ module Tztr
     stamps = with_range_hours(line, scan_stamps(line))
     joins = stamps.each_cons(2).map { |head, tail| join_between(line, head, tail) }
 
-    # Each item takes the zone and meridiem written after the one it joins:
+    # Each member takes the zone and meridiem written after the one it joins:
     # "3:30 to 4:45 PM PST" starts at 3:30 PM PST. Walked backwards, so a chain
     # passes them all the way down.
     (joins.length - 1).downto(0) do |i|
-      stamps[i] = stamps[i].with(effective: range_start(stamps[i].effective, stamps[i + 1].effective)) if joins[i]
+      next unless joins[i]
+
+      date, clock = split_date(stamps[i].effective)
+      stamps[i] = stamps[i].with(effective: "#{date}#{range_start(clock, stamps[i + 1].effective)}")
     end
 
-    # A later member earlier on the clock is on the next day: 11:30 PM to
+    # Forwards, each member in the same zone as the one before it takes that
+    # one's date, and the next day if it is earlier on the clock: 11:30 PM to
     # 12:30 AM ends tomorrow.
     joins.each_with_index do |join, i|
-      next unless join
-
       head, tail = stamps[i], stamps[i + 1]
-      rolls = detect_zone(head.effective) == detect_zone(tail.effective) &&
-              minute_of_day(tail.effective) < minute_of_day(head.effective)
-      stamps[i + 1] = tail.with(days: head.days + (rolls ? 1 : 0))
+      next unless join && detect_zone(head.effective) == detect_zone(tail.effective)
+
+      date, clock = split_date(head.effective)
+      rolls = minute_of_day(tail.effective) < minute_of_day(clock) ? 1 : 0
+      stamps[i + 1] =
+        if date
+          tail.with(effective: "#{(Date.parse(date) + rolls).strftime('%F')} #{tail.effective}")
+        else
+          tail.with(days: head.days + rolls)
+        end
     end
 
     group_ids = joins.reduce([0]) { |ids, join| ids << (join ? ids.last : ids.last + 1) }
     kept = stamps.each_index.reject { |i| stamps[i].effective.match?(BARE_TIME) }
     kept = stamps.each_index.to_a if kept.empty?
 
-    peers = kept.group_by { |i| group_ids[i] }
-    kept.map do |i|
-      members = peers[group_ids[i]]
-      next stamps[i] if members.size < 2
+    groups = kept.group_by { |i| group_ids[i] }.transform_values do |members|
+      next if members.size < 2
 
       type = members[0...-1].all? { |m| joins[m] == :range } ? 'range' : 'list'
-      stamps[i].with(group: { type:, members: members.map { |m| stamps[m].text } })
+      { type:, members: members.map { |m| stamps[m].text } }
     end
+    kept.map { |i| (group = groups[group_ids[i]]) ? stamps[i].with(group:) : stamps[i] }
+  end
+
+  # A reading split into its date with separator, if any, and its clock.
+  def split_date(time)
+    m = time.match(/\A(\d{4}-\d{2}-\d{2}[T ])?(.*)\z/m)
+    [m[1], m[2]]
   end
 
   def scan_stamps(line)
@@ -353,7 +383,7 @@ module Tztr
 
   # How two neighbouring time-only timestamps are joined: :range, :list or nil.
   def join_between(line, head, tail)
-    return unless head.effective.match?(TIME_PARTS) && tail.effective.match?(TIME_PARTS)
+    return unless split_date(head.effective)[1].match?(TIME_PARTS) && tail.effective.match?(TIME_PARTS)
 
     gap = text_between(line, head.offset + head.text.bytesize, tail.offset)
     if gap&.match?(RANGE_JOIN) then :range
@@ -394,11 +424,43 @@ module Tztr
 
   # Parsed as its effective reading, formatted to mirror what was written.
   def convert_stamp(stamp, from:, to:, format:, date:)
-    date = ((date ? Date.parse(date) : Time.now.to_date) + stamp.days).strftime('%F') if stamp.days.positive?
+    if time_only?(stamp.effective)
+      base = date ? Date.parse(date) : today_where(stamp.effective, from, to)
+      date = (base + stamp.days).strftime('%F')
+    end
     time = parse(stamp.effective, from:, to:, date:)
     format_time(time.localtime, format, stamp.text)
   rescue ArgumentError
     nil
+  end
+
+  # Today where a dateless timestamp was written: in the zone it names, or else
+  # the source zone. What -d stands in for, and what -v names when it is absent.
+  def today_where(time, from, to)
+    abbr = detect_zone(time)&.upcase
+    offset = zone_offset(abbr)
+    return Time.now.getlocal(offset).to_date if offset
+
+    ENV['TZ'] = aliased_zone(abbr) || from || to
+    today = Time.now.to_date
+    ENV['TZ'] = to
+    today
+  end
+
+  # The fixed offset an abbreviation or numeric zone names, as +HH:MM.
+  def zone_offset(abbr)
+    return if abbr.nil?
+    return abbr.sub(/\A([+-]\d{2}):?(\d{2})\z/, '\1:\2') if abbr.match?(/\A[+-]\d{2}:?\d{2}\z/)
+
+    ZONE_OFFSETS[abbr]
+  end
+
+  # The date -v says it assumed for this line's first dateless timestamp.
+  def assumed_date(line, from: nil, to: 'UTC')
+    to = resolve_tz(to)
+    from = resolve_tz(from)
+    stamp = timestamps(scannable(line)).find { |s| time_only?(s.effective) }
+    stamp && today_where(stamp.effective, from, to).strftime('%F')
   end
 
   def detect_format(str)
@@ -425,13 +487,20 @@ module Tztr
     # Time.parse reads the "p" of "3:45 p.m." as the military zone P (-03:00).
     str = str.sub(/([AaPp])\.([Mm])\.?/, '\1\2')
 
-    # Canonical case, so a lowercase abbreviation resolves exactly as its
-    # uppercase one does -- pst a fixed -08:00, not Los Angeles with DST.
-    if (abbr = detect_zone(str))
-      str = str.delete_suffix(abbr) + abbr.upcase
-      abbr = abbr.upcase
+    # Time.parse accepts 99:14 in some shapes; the Rust port never does.
+    h, m, sec = str.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/)&.captures&.map(&:to_i)
+    unless h && m <= 59 && sec.to_i <= 60 && (h < 24 || (h == 24 && m.zero? && sec.to_i.zero?))
+      raise ArgumentError, "impossible clock: #{str}"
     end
-    zone = aliased_zone(abbr)
+
+    # A fixed abbreviation becomes the offset it names, in whatever case it was
+    # written, so Time.parse's own zone table never decides.
+    abbr = detect_zone(str)
+    if abbr&.match?(/\A[A-Za-z]+\z/) && (offset = zone_offset(abbr.upcase))
+      str = str.delete_suffix(abbr) + offset
+      abbr = offset
+    end
+    zone = aliased_zone(abbr&.upcase)
 
     if zone
       # Strip the abbreviation: left in place, Time.parse's own zone table
@@ -447,9 +516,9 @@ module Tztr
     end
   end
 
-  # The IANA zone an abbreviation names, for the ones Time.parse can't resolve.
+  # The IANA zone a generic abbreviation (ET, PT) names; fixed ones have none.
   def aliased_zone(abbr)
-    return if abbr.nil? || NATIVE_ABBREVIATIONS.include?(abbr)
+    return if abbr.nil? || zone_offset(abbr)
 
     TIMEZONE_ALIASES[abbr.downcase]
   end

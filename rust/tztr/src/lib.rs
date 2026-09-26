@@ -105,8 +105,10 @@ fn timestamp() -> &'static BytesRegex {
     static RE: OnceLock<BytesRegex> = OnceLock::new();
     RE.get_or_init(|| {
         let zone = zone_alternation();
-        // A trailing zone token: an allowlisted abbreviation or +HHMM.
-        let tz = format!(r"(?:(?:{zone})\b|[+-][0-9]{{4}}\b)");
+        // A trailing zone token: an allowlisted abbreviation or +HHMM within
+        // the -12..+14 real zones occupy.
+        let num = NUM_OFFSET;
+        let tz = format!(r"(?:(?:{zone})\b|{num})");
         // Seconds and fractional seconds, both optional.
         let secs = r"(?::[0-9]{2}(?:\.[0-9]+)?)?";
         // A meridiem, optionally followed by a zone ("3:45 PM PST"). A
@@ -121,24 +123,27 @@ fn timestamp() -> &'static BytesRegex {
                 r"\b(?:{DAY}, )?[0-9]{{1,2}} {MON} [0-9]{{4}} [0-9]{{2}}:[0-9]{{2}}(?::[0-9]{{2}})? (?:[+-][0-9]{{4}}\b|(?:{zone})\b)"
             ),
             // ISO 8601 with Z or offset
-            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}{secs}(?:Z|[+-][0-9]{{2}}:?[0-9]{{2}})"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{1,2}}:[0-9]{{2}}{secs}(?:Z|[+-][0-9]{{2}}:?[0-9]{{2}})"),
             // ISO 8601 without timezone
-            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}{secs}"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{1,2}}:[0-9]{{2}}{secs}"),
             // Date space 12-hour time — above the with-tz pattern, and the
             // date must be part of the match or the time resolves its DST
             // against today instead of the date beside it.
             format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} [0-9]{{1,2}}:[0-9]{{2}}{secs}{mer}"),
             // Date space time with tz
-            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} [0-9]{{2}}:[0-9]{{2}}{secs} ?{tz}"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} [0-9]{{1,2}}:[0-9]{{2}}{secs} ?{tz}"),
             // Date space time
-            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} [0-9]{{2}}:[0-9]{{2}}{secs}"),
+            format!(r"[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} [0-9]{{1,2}}:[0-9]{{2}}{secs}"),
             // 12-hour time
             format!(r"\b[0-9]{{1,2}}:[0-9]{{2}}{secs}{mer}"),
-            // Time with tz
-            format!(r"\b[0-9]{{1,2}}:[0-9]{{2}}{secs} ?{tz}"),
+            // Time with tz. A numeric offset glued to the clock needs
+            // seconds, or 15:30-1645 would read as one.
+            format!(
+                r"\b[0-9]{{1,2}}:[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+)? ?{tz}| ?(?:{zone})\b| (?:{num}))"
+            ),
             // Time with offset. Seconds required and the offset in range, so
             // the hyphen of a range like 15:30-16:45 is not read as one.
-            r"\b[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?[+-](?:0[0-9]|1[0-4]):?[0-5][0-9]\b".to_string(),
+            r"\b[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?[+-](?:(?:0[0-9]|1[0-3]):?[0-5][0-9]|14:?00)\b".to_string(),
             // Hour with a meridiem: 9am, 9 PM PST
             format!(r"\b[0-9]{{1,2}}{mer}"),
             // Bare time
@@ -246,7 +251,7 @@ pub fn translate_bytes(
 
     let mut out = Vec::with_capacity(line.len());
     let mut pos = 0;
-    for stamp in timestamps(line) {
+    for stamp in timestamps(line, false) {
         out.extend_from_slice(&line[pos..stamp.start]);
         let converted = convert_stamp(&stamp, from_tz.as_ref(), &to_tz, format, date);
         out.extend_from_slice(converted.as_deref().unwrap_or(stamp.text).as_bytes());
@@ -288,32 +293,44 @@ enum Join {
 /// The timestamps in a line, in order. A bare time beside one that names a
 /// date, zone or meridiem is most likely a duration ("took 0:05"), and is left
 /// out: that zone belongs to the timestamp naming it. Mirrors `Tztr.timestamps`.
-fn timestamps(line: &[u8]) -> Vec<Stamp<'_>> {
+fn timestamps(line: &[u8], with_groups: bool) -> Vec<Stamp<'_>> {
     let mut stamps = with_range_hours(line, scan_stamps(line));
     let joins: Vec<Option<Join>> = stamps
         .windows(2)
         .map(|w| join_between(line, &w[0], &w[1]))
         .collect();
 
-    // Each item takes the zone and meridiem written after the one it joins:
+    // Each member takes the zone and meridiem written after the one it joins:
     // "3:30 to 4:45 PM PST" starts at 3:30 PM PST. Walked backwards, so a chain
     // passes them all the way down.
     for i in (0..joins.len()).rev() {
         if joins[i].is_some() {
-            stamps[i].effective = range_start(&stamps[i].effective, &stamps[i + 1].effective);
+            let (date, clock) = split_date(&stamps[i].effective);
+            stamps[i].effective = format!("{date}{}", range_start(clock, &stamps[i + 1].effective));
         }
     }
 
-    // A later member earlier on the clock is on the next day: 11:30 PM to
+    // Forwards, each member in the same zone as the one before it takes that
+    // one's date, and the next day if it is earlier on the clock: 11:30 PM to
     // 12:30 AM ends tomorrow.
     for i in 0..joins.len() {
-        if joins[i].is_none() {
+        let (head, tail) = (&stamps[i], &stamps[i + 1]);
+        if joins[i].is_none() || detect_zone(&head.effective) != detect_zone(&tail.effective) {
             continue;
         }
-        let (head, tail) = (&stamps[i], &stamps[i + 1]);
-        let rolls = detect_zone(&head.effective) == detect_zone(&tail.effective)
-            && minute_of_day(&tail.effective) < minute_of_day(&head.effective);
-        stamps[i + 1].days = stamps[i].days + i64::from(rolls);
+        let (date, clock) = split_date(&head.effective);
+        let rolls = i64::from(minute_of_day(&tail.effective) < minute_of_day(clock));
+        if date.is_empty() {
+            stamps[i + 1].days = head.days + rolls;
+        } else {
+            let day = date[..10]
+                .parse::<Date>()
+                .ok()
+                .and_then(|d| d.checked_add(Span::new().days(rolls)).ok());
+            if let Some(day) = day {
+                stamps[i + 1].effective = format!("{day} {}", tail.effective);
+            }
+        }
     }
 
     let mut group_ids = vec![0];
@@ -328,28 +345,39 @@ fn timestamps(line: &[u8]) -> Vec<Stamp<'_>> {
         kept = (0..stamps.len()).collect();
     }
 
-    let groups: Vec<Option<Group>> = kept
-        .iter()
-        .map(|&i| {
-            let members: Vec<usize> = kept
-                .iter()
-                .copied()
-                .filter(|&m| group_ids[m] == group_ids[i])
-                .collect();
-            if members.len() < 2 {
-                return None;
-            }
+    // Each group built once, in one pass: a line of thousands of stamps must
+    // not cost a scan of the line per stamp.
+    // Only -j reports groups; each member carries its own copy, so building
+    // them for plain translation would clone every list once per member.
+    if !with_groups {
+        let mut stamps: Vec<Option<Stamp>> = stamps.into_iter().map(Some).collect();
+        return kept.iter().map(|&i| stamps[i].take().unwrap()).collect();
+    }
+
+    let mut by_group: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+    for &i in &kept {
+        by_group.entry(group_ids[i]).or_default().push(i);
+    }
+    let built: std::collections::BTreeMap<usize, Group> = by_group
+        .into_iter()
+        .filter(|(_, members)| members.len() >= 2)
+        .map(|(id, members)| {
             let range = members[..members.len() - 1]
                 .iter()
                 .all(|&m| joins[m] == Some(Join::Range));
-            Some(Group {
+            let group = Group {
                 kind: if range { "range" } else { "list" }.to_string(),
                 members: members
                     .iter()
                     .map(|&m| stamps[m].text.to_string())
                     .collect(),
-            })
+            };
+            (id, group)
         })
+        .collect();
+    let groups: Vec<Option<Group>> = kept
+        .iter()
+        .map(|&i| built.get(&group_ids[i]).cloned())
         .collect();
 
     let mut stamps: Vec<Option<Stamp>> = stamps.into_iter().map(Some).collect();
@@ -470,8 +498,23 @@ fn with_range_hours<'a>(line: &'a [u8], stamps: Vec<Stamp<'a>>) -> Vec<Stamp<'a>
 }
 
 /// How two neighbouring time-only timestamps are joined, if at all.
+/// A reading split into its date with separator, if any, and its clock.
+fn split_date(time: &str) -> (&str, &str) {
+    match dated_prefix_re().find(time) {
+        Some(m) => (m.as_str(), &time[m.end()..]),
+        None => ("", time),
+    }
+}
+
+fn dated_prefix_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ]").unwrap())
+}
+
 fn join_between(line: &[u8], head: &Stamp, tail: &Stamp) -> Option<Join> {
-    if !time_parts_re().is_match(&head.effective) || !time_parts_re().is_match(&tail.effective) {
+    if !time_parts_re().is_match(split_date(&head.effective).1)
+        || !time_parts_re().is_match(&tail.effective)
+    {
         return None;
     }
     let gap = &line[head.end..tail.start];
@@ -561,11 +604,14 @@ fn time_parts_re() -> &'static Regex {
     RE.get_or_init(|| {
         let zone = zone_alternation();
         Regex::new(&format!(
-            r"^(?<clock>(?<hour>[0-9]{{1,2}}):[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+)?)?)(?: ?(?<meridiem>[AaPp](?:\.[Mm]\.|\.?[Mm]\b)))?(?: ?(?<zone>(?:{zone})\b|[+-][0-9]{{4}}\b))?$"
+            r"^(?<clock>(?<hour>[0-9]{{1,2}}):[0-9]{{2}}(?::[0-9]{{2}}(?:\.[0-9]+)?)?)(?: ?(?<meridiem>[AaPp](?:\.[Mm]\.|\.?[Mm]\b)))?(?: ?(?<zone>(?:{zone})\b|{NUM_OFFSET}))?$"
         ))
         .unwrap()
     })
 }
+
+/// A numeric offset within the -12..+14 real zones occupy.
+const NUM_OFFSET: &str = r"[+-](?:0[0-9]|1[0-3])[0-5][0-9]\b|[+-]1400\b";
 
 const RANGE_WORDS: &str = "-|–|—|to|until|till|through|thru";
 
@@ -657,7 +703,7 @@ pub fn matches_bytes(
 ) -> Vec<Match> {
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
-    timestamps(line)
+    timestamps(line, true)
         .into_iter()
         .map(|stamp| {
             let translated = if detect {
@@ -667,7 +713,7 @@ pub fn matches_bytes(
             };
             Match {
                 original: stamp.text.to_string(),
-                detected_format: detect_format(&stamp.effective).to_string(),
+                detected_format: detect_format(&reading(stamp.text)).to_string(),
                 detected_tz: detect_zone(&stamp.effective),
                 translated,
                 group: stamp.group,
@@ -684,24 +730,7 @@ fn convert_stamp(
     format: Option<Format>,
     date: Option<&str>,
 ) -> Option<String> {
-    let rolled;
-    let date = if stamp.days > 0 {
-        let base = match date {
-            Some(d) => d.parse::<Date>().ok()?,
-            None => {
-                let (y, m, d) = today_in(to_tz);
-                Date::new(y, m, d).ok()?
-            }
-        };
-        rolled = base
-            .checked_add(Span::new().days(stamp.days))
-            .ok()?
-            .to_string();
-        Some(rolled.as_str())
-    } else {
-        date
-    };
-    let zoned = parse(&stamp.effective, from_tz, to_tz, date)?;
+    let zoned = parse(&stamp.effective, from_tz, to_tz, date, stamp.days)?;
     Some(format_time(&zoned, format, stamp.text))
 }
 
@@ -748,15 +777,13 @@ impl Assumptions {
 
 /// What converting `line` would have to assume. See [`Assumptions`].
 pub fn assumptions(line: &[u8]) -> Assumptions {
-    let dateless: Vec<String> = timestamps(line)
+    let readings: Vec<String> = timestamps(line, false)
         .into_iter()
         .map(|s| s.effective)
-        .filter(|s| detect_format(s) == "time")
         .collect();
-
     Assumptions {
-        date: !dateless.is_empty(),
-        zone: dateless.iter().any(|s| detect_zone(s).is_none()),
+        date: readings.iter().any(|s| time_only_re().is_match(s)),
+        zone: readings.iter().any(|s| detect_zone(s).is_none()),
     }
 }
 
@@ -831,6 +858,7 @@ fn parse(
     from_tz: Option<&TimeZone>,
     to_tz: &TimeZone,
     date: Option<&str>,
+    days: i64,
 ) -> Option<Zoned> {
     let owned;
     let s = match date {
@@ -855,31 +883,19 @@ fn parse(
     // the zone whose "today" fills the missing date (mirrors Ruby's
     // Time.parse). NOT the output zone when a zone is embedded, which would
     // land a day off near a midnight boundary.
-    let anchor: TimeZone = if !zone_token.is_empty() {
-        match zone_offset_seconds(zone_token) {
-            // UTC/GMT/UT, E/C/M/P × ST/DT and numeric offsets are fixed offsets.
-            Some(off) => TimeZone::fixed(Offset::from_seconds(off).ok()?),
-            // CET, JST, AEST, … carry real DST rules; resolve them as zones.
-            None => abbrev_zone(zone_token)?,
-        }
-    } else if let Some(f) = from_tz {
-        f.clone()
-    } else {
-        to_tz.clone()
-    };
+    let anchor = anchor(zone_token, from_tz, to_tz)?;
 
     let (year, month, day) = match (group("y"), group("mo"), group("d")) {
         (Some(y), Some(mo), Some(d)) => (y.parse().ok()?, mo.parse().ok()?, d.parse().ok()?),
         _ => today_in(&anchor),
     };
+    // A later member of a range or list that rolled past midnight.
+    let day = Date::new(year, month, day)
+        .ok()?
+        .checked_add(Span::new().days(days))
+        .ok()?;
 
-    let civil = civil_datetime(
-        Date::new(year, month, day).ok()?,
-        hour,
-        minute,
-        second,
-        nanos,
-    )?;
+    let civil = civil_datetime(day, hour, minute, second, nanos)?;
     let instant = civil.to_zoned(anchor).ok()?;
 
     Some(instant.with_time_zone(to_tz.clone()))
@@ -889,6 +905,33 @@ fn parse(
 /// legitimately produces: `24:00`, the midnight that ends a day, and `:60`, a
 /// leap second. Anything further out of range (`25:00`, `12:60`) is not a time
 /// at all — the caller leaves that text exactly as it found it.
+/// The zone a timestamp's wall clock is read in: the zone it names, else the
+/// source zone, else the output zone. For a dateless one, also the zone whose
+/// "today" fills the missing date -- where it was written.
+fn anchor(zone_token: &str, from_tz: Option<&TimeZone>, to_tz: &TimeZone) -> Option<TimeZone> {
+    if zone_token.is_empty() {
+        return Some(from_tz.unwrap_or(to_tz).clone());
+    }
+    match zone_offset_seconds(zone_token) {
+        Some(off) => Some(TimeZone::fixed(Offset::from_seconds(off).ok()?)),
+        // ET, CT, MT, PT follow DST; resolve them as zones.
+        None => abbrev_zone(zone_token),
+    }
+}
+
+/// The date `-v` says it assumed for this line's first dateless timestamp:
+/// today where it was written. Mirrors `Tztr.assumed_date`.
+pub fn assumed_date(line: &[u8], from: Option<&str>, to: &str) -> Option<String> {
+    let stamp = timestamps(line, false)
+        .into_iter()
+        .find(|s| time_only_re().is_match(&s.effective))?;
+    let to_tz = resolve_zone(to);
+    let from_tz = from.map(resolve_zone);
+    let token = detect_zone(&stamp.effective).unwrap_or_default();
+    let (y, m, d) = today_in(&anchor(&token, from_tz.as_ref(), &to_tz)?);
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
 fn civil_datetime(date: Date, hour: i8, minute: i8, second: i8, nanos: i32) -> Option<DateTime> {
     let in_range = (0..=59).contains(&minute)
         && (0..=60).contains(&second)
@@ -953,6 +996,20 @@ fn zone_offset_seconds(token: &str) -> Option<i32> {
         "MDT" => Some(-6 * 3600),
         "PST" => Some(-8 * 3600),
         "PDT" => Some(-7 * 3600),
+        // Standard and daylight abbreviations are fixed whatever the date --
+        // CEST is +02:00 even in January. Only ET, CT, MT, PT follow DST.
+        "HST" => Some(-10 * 3600),
+        "AKST" => Some(-9 * 3600),
+        "AKDT" => Some(-8 * 3600),
+        "CET" | "BST" => Some(3600),
+        "CEST" => Some(2 * 3600),
+        "IST" => Some(5 * 3600 + 1800),
+        "JST" | "KST" => Some(9 * 3600),
+        "HKT" => Some(8 * 3600),
+        "AEST" => Some(10 * 3600),
+        "AEDT" => Some(11 * 3600),
+        "NZST" => Some(12 * 3600),
+        "NZDT" => Some(13 * 3600),
         _ => None,
     }
 }
@@ -1685,13 +1742,113 @@ mod tests {
     }
 
     #[test]
-    fn alias_only_abbreviations_resolve_through_the_alias_table() {
+    fn a_standard_or_daylight_abbreviation_is_the_offset_it_names() {
         // Previously matched by [A-Z]{2,4}, then silently ignored by the
         // parser — a Tokyo time was treated as local and came out 9h wrong.
         assert_eq!(tr_on("15:30 JST", "UTC", "2026-04-03"), "06:30 UTC");
-        assert_eq!(tr_on("15:30 CET", "UTC", "2026-01-15"), "14:30 UTC");
-        assert_eq!(tr_on("15:30 CET", "UTC", "2026-07-15"), "13:30 UTC");
-        assert_eq!(tr_on("15:30 AEST", "UTC", "2026-06-15"), "05:30 UTC");
+        // CEST is +02:00 even in January, CET +01:00 even in July.
+        assert_eq!(tr_on("15:30 CET", "UTC", "2026-07-15"), "14:30 UTC");
+        assert_eq!(tr_on("15:30 CEST", "UTC", "2026-01-15"), "13:30 UTC");
+        assert_eq!(tr_on("15:30 BST", "UTC", "2026-01-15"), "14:30 UTC");
+        assert_eq!(tr_on("15:30 AEST", "UTC", "2026-01-15"), "05:30 UTC");
+        assert_eq!(tr_on("15:30 NZDT", "UTC", "2026-07-15"), "02:30 UTC");
+        assert_eq!(tr_on("15:30 IST", "UTC", "2026-01-15"), "10:00 UTC");
+        assert_eq!(tr("2026-07-15 15:30 CET", "UTC"), "2026-07-15 14:30 UTC");
+    }
+
+    #[test]
+    fn a_generic_abbreviation_follows_dst() {
+        assert_eq!(tr_on("15:30 PT", "UTC", "2026-01-15"), "23:30 UTC");
+        assert_eq!(tr_on("15:30 PT", "UTC", "2026-07-15"), "22:30 UTC");
+    }
+
+    #[test]
+    fn a_dated_start_shares_its_date_and_takes_the_ends_zone() {
+        assert_eq!(
+            tr("2026-04-03 9:00 AM - 10:00 AM PST", "UTC"),
+            "2026-04-03 17:00 UTC - 18:00 UTC"
+        );
+        assert_eq!(
+            translate(
+                "2026-04-03 15:30 - 16:30",
+                "America/Los_Angeles",
+                Some("UTC"),
+                None,
+                None
+            ),
+            "2026-04-03 08:30 PDT - 09:30 PDT"
+        );
+        assert_eq!(
+            translate(
+                "2026-04-03 23:00 - 01:00",
+                "UTC",
+                Some("UTC"),
+                Some(Format::Iso),
+                None
+            ),
+            "2026-04-03 23:00:00Z - 2026-04-04 01:00:00Z"
+        );
+    }
+
+    #[test]
+    fn a_dated_single_digit_hour_keeps_its_date() {
+        assert_eq!(
+            tr("2026-01-15 9:00 UTC", "Etc/GMT+12"),
+            "2026-01-14 21:00 -12"
+        );
+        assert_eq!(
+            tr("2026-01-15T9:00:00Z", "Etc/GMT+12"),
+            "2026-01-14T21:00:00-12:00"
+        );
+    }
+
+    #[test]
+    fn a_glued_offset_needs_seconds_and_range() {
+        let tr = |l| translate(l, "UTC", None, None, Some("2026-04-03"));
+        assert_eq!(tr("15:30-1645"), "15:30 UTC-1645");
+        assert_eq!(tr("12:00+0530"), "12:00 UTC+0530");
+        assert_eq!(tr("12:00 +0530"), "06:30 UTC");
+        assert_eq!(tr("12:00:00-14:59"), "12:00:00 UTC-14:59 UTC");
+        assert_eq!(tr("12:00:00+14:00"), "22:00:00 UTC");
+        assert_eq!(
+            translate("2026-04-03 12:00:00 -1645", "UTC", None, None, None),
+            "2026-04-03 12:00:00 UTC -1645"
+        );
+    }
+
+    #[test]
+    fn impossible_clocks_are_left_alone() {
+        assert_eq!(
+            tr("2026-09-25 99:14:42 PDT", "UTC"),
+            "2026-09-25 99:14:42 PDT"
+        );
+        assert_eq!(tr_on("99am", "UTC", "2026-04-03"), "99am");
+        assert_eq!(
+            tr("Fri Sep 25 25:14:42 PDT 2026", "UTC"),
+            "Fri Sep 25 25:14:42 PDT 2026"
+        );
+    }
+
+    #[test]
+    fn a_range_past_midnight_is_an_hour_long_whatever_today_is_where() {
+        for to in ["Etc/GMT-14", "Etc/GMT+12", "Asia/Tokyo"] {
+            let out = translate(
+                "11:30 PM to 12:30 AM PST",
+                to,
+                None,
+                Some(Format::Iso),
+                None,
+            );
+            let (start, end) = out.split_once(" to ").unwrap();
+            let parse = |t: &str| {
+                jiff::fmt::strtime::parse("%Y-%m-%d %H:%M:%S%:z", t)
+                    .unwrap()
+                    .to_timestamp()
+                    .unwrap()
+            };
+            let hour = parse(end).duration_since(parse(start));
+            assert_eq!(hour.as_secs(), 3600, "{to}: {out}");
+        }
     }
 
     #[test]

@@ -266,9 +266,20 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       expect(Tztr.translate("15:30 JST", to: "UTC")).to eq("06:30 UTC")
     end
 
-    it "follows DST for an abbreviation resolved through an IANA zone" do
-      expect(Tztr.translate("15:30 CET", to: "UTC", date: "2026-01-15")).to eq("14:30 UTC")
-      expect(Tztr.translate("15:30 CET", to: "UTC", date: "2026-07-15")).to eq("13:30 UTC")
+    it "reads a standard or daylight abbreviation as the offset it names" do
+      tr = ->(line, date) { Tztr.translate(line, to: "UTC", date:) }
+      expect(tr.("15:30 CET", "2026-07-15")).to eq("14:30 UTC")
+      expect(tr.("15:30 CEST", "2026-01-15")).to eq("13:30 UTC")
+      expect(tr.("15:30 BST", "2026-01-15")).to eq("14:30 UTC")
+      expect(tr.("15:30 AEST", "2026-01-15")).to eq("05:30 UTC")
+      expect(tr.("15:30 NZDT", "2026-07-15")).to eq("02:30 UTC")
+      expect(tr.("15:30 IST", "2026-01-15")).to eq("10:00 UTC")
+      expect(Tztr.translate("2026-07-15 15:30 CET", to: "UTC")).to eq("2026-07-15 14:30 UTC")
+    end
+
+    it "follows DST for a generic abbreviation" do
+      expect(Tztr.translate("15:30 PT", to: "UTC", date: "2026-01-15")).to eq("23:30 UTC")
+      expect(Tztr.translate("15:30 PT", to: "UTC", date: "2026-07-15")).to eq("22:30 UTC")
     end
 
     it "does not report a log level as a timezone" do
@@ -326,7 +337,59 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
     end
   end
 
+  describe "ranges with a dated start" do
+    it "shares the end's zone with the start and the start's date with the end" do
+      expect(Tztr.translate("2026-04-03 9:00 AM - 10:00 AM PST", to: "UTC"))
+        .to eq("2026-04-03 17:00 UTC - 18:00 UTC")
+      expect(Tztr.translate("2026-04-03 15:30 - 16:30", from: "UTC", to: "America/Los_Angeles"))
+        .to eq("2026-04-03 08:30 PDT - 09:30 PDT")
+      expect(Tztr.translate("2026-04-03 23:00 - 01:00", from: "UTC", to: "UTC", format: :iso))
+        .to eq("2026-04-03 23:00:00Z - 2026-04-04 01:00:00Z")
+    end
+  end
+
+  describe "dated times with a single-digit hour" do
+    it "keeps the date" do
+      expect(Tztr.translate("2026-01-15 9:00 UTC", to: "Etc/GMT+12")).to eq("2026-01-14 21:00 -12")
+      expect(Tztr.translate("2026-01-15T9:00:00Z", to: "Etc/GMT+12")).to eq("2026-01-14T21:00:00-12:00")
+    end
+  end
+
+  describe "UTC offsets" do
+    it "reads a glued offset only after seconds, and only within range" do
+      expect(Tztr.translate("15:30-1645", to: "UTC", date: "2026-04-03")).to eq("15:30 UTC-1645")
+      expect(Tztr.translate("12:00+0530", to: "UTC", date: "2026-04-03")).to eq("12:00 UTC+0530")
+      expect(Tztr.translate("12:00 +0530", to: "UTC", date: "2026-04-03")).to eq("06:30 UTC")
+      expect(Tztr.translate("12:00:00-14:59", to: "UTC", date: "2026-04-03")).to eq("12:00:00 UTC-14:59 UTC")
+      expect(Tztr.translate("2026-04-03 12:00:00 -1645", to: "UTC")).to eq("2026-04-03 12:00:00 UTC -1645")
+      expect(Tztr.translate("12:00:00+14:00", to: "UTC", date: "2026-04-03")).to eq("22:00:00 UTC")
+    end
+
+    it "converts a dateless offset time without -d" do
+      expect(Tztr.translate("12:34:56-05:00", to: "UTC")).to eq("17:34:56 UTC")
+      expect(Tztr.translate("12:00 +0530", to: "UTC")).to eq("06:30 UTC")
+    end
+  end
+
+  describe "impossible clocks" do
+    it "leaves them alone" do
+      expect(Tztr.translate("2026-09-25 99:14:42 PDT", to: "UTC")).to eq("2026-09-25 99:14:42 PDT")
+      expect(Tztr.translate("99am", to: "UTC", date: "2026-04-03")).to eq("99am")
+      expect(Tztr.translate("Fri Sep 25 25:14:42 PDT 2026", to: "UTC")).to eq("Fri Sep 25 25:14:42 PDT 2026")
+    end
+  end
+
   describe "ranges crossing midnight" do
+    it "keeps a range an hour long whatever today is where" do
+      # The start and the rolled end share one base date, whichever zone's
+      # "today" it came from.
+      %w[Etc/GMT-14 Etc/GMT+12 Asia/Tokyo].each do |to|
+        out = Tztr.translate("11:30 PM to 12:30 AM PST", to:, format: :iso)
+        start, finish = out.split(" to ").map { |t| Time.parse(t) }
+        expect(finish - start).to eq(3600), "#{to}: #{out}"
+      end
+    end
+
     def iso(line) = Tztr.translate(line, to: "UTC", format: :iso, date: "2026-04-03")
 
     it "moves a later member that is earlier on the clock to the next day" do
@@ -787,6 +850,24 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
     it "says nothing about a lowercase word it deliberately does not read as a zone" do
       _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-v", "-d", "2026-04-03", stdin_data: "à 15:30 est annulée\n")
       expect(err).not_to include("ignored")
+    end
+
+    it "discloses a dated timestamp that borrows its zone from $TZ" do
+      _, err, = Open3.capture3(
+        { "TZ" => "America/New_York" }, TZTR, "-v", "-t", "utc", stdin_data: "2026-04-03 12:00:00\n"
+      )
+      expect(err).to include("tztr: from=America/New_York (implicit, from $TZ) to=UTC")
+      expect(err).not_to include("no -d given")
+    end
+
+    it "names the date it actually assumed" do
+      _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-v", "-t", "Etc/GMT-14", stdin_data: "15:30 PST\n")
+      expect(err).to include("no -d given, assuming #{(Time.now.utc - 8 * 3600).strftime('%F')}")
+    end
+
+    it "says nothing under --detect, which assumes nothing" do
+      _, err, = Open3.capture3({ "TZ" => "America/New_York" }, TZTR, "--detect", "-v", stdin_data: "15:30 Pst\n")
+      expect(err).to be_empty
     end
 
     it "says nothing about assumptions it did not make" do

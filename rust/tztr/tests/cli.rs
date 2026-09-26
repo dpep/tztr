@@ -296,11 +296,13 @@ fn verbose_suppresses_the_startup_line_when_the_source_zone_is_implicit() {
 }
 
 #[test]
-fn verbose_dates_the_dst_assumption_in_the_target_zone() {
+fn verbose_dates_the_dst_assumption_where_the_timestamp_was_written() {
+    // A bare time borrows $TZ as its source zone, so "today" is today there,
+    // not in the output zone -- the date the conversion actually used.
     let o = verbose_bare(&["-v", "-t", "Pacific/Auckland"]);
     let expected = format!(
         "tztr: no -d given, assuming {} for DST resolution",
-        tztr::today_in_zone("Pacific/Auckland")
+        tztr::today_in_zone("America/Los_Angeles")
     );
     assert!(o.stderr.contains(&expected), "{}", o.stderr);
 }
@@ -314,7 +316,7 @@ fn verbose_discloses_the_date_assumption_even_when_the_match_names_a_zone() {
     assert!(o.ok, "{}", o.stderr);
     let expected = format!(
         "tztr: no -d given, assuming {} for DST resolution",
-        tztr::today_in_zone("America/New_York")
+        tztr::today_in_zone("UTC")
     );
     assert!(o.stderr.contains(&expected), "{}", o.stderr);
 

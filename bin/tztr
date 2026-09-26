@@ -163,7 +163,9 @@ disclose = lambda do |line|
 
   disclosed.concat(assumed)
   warn "#{parser.program_name}: from=#{options[:from]} (implicit, from $TZ) to=#{options[:to]}" if assumed.include?(:zone) && implicit_from
-  warn "#{parser.program_name}: no -d given, assuming #{Date.today.strftime('%Y-%m-%d')} for DST resolution" if assumed.include?(:date) && !options[:date]
+  return unless assumed.include?(:date) && !options[:date]
+
+  warn "#{parser.program_name}: no -d given, assuming #{Tztr.assumed_date(line, from: options[:from], to: options[:to])} for DST resolution"
 end
 
 # An error about one of our inputs names it, and the run carries on with the
@@ -192,7 +194,7 @@ begin
     ARGV.each do |file|
       content = File.read(file)
       translated = content.each_line.map do |line|
-        disclose.call(line) if options[:verbose]
+        disclose.call(line) if options[:verbose] && !options[:detect]
         Tztr.translate(line, to: options[:to], from: options[:from], format: options[:format], date: options[:date])
       end.join
       File.write(file, translated) if translated != content
@@ -209,7 +211,7 @@ begin
       input = path ? File.open(path) : $stdin
 
       input.each_line do |line|
-        disclose.call(line) if options[:verbose]
+        disclose.call(line) if options[:verbose] && !options[:detect]
 
         if json_mode
           ms = Tztr.matches(line, to: options[:to], from: options[:from], format: options[:format], detect: options[:detect], date: options[:date])

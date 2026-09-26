@@ -10,7 +10,7 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
 use tztr::{
-    assumptions, ignored_zones, matches_bytes, resolve_tz, timezone_aliases, today_in_zone,
+    assumed_date, assumptions, ignored_zones, matches_bytes, resolve_tz, timezone_aliases,
     translate_bytes, Assumptions, Format, Match,
 };
 
@@ -424,7 +424,7 @@ fn disclose(opts: &Options, line: &[u8], disclosed: &mut Disclosed) {
     if new.date && opts.date.is_none() {
         eprintln!(
             "tztr: no -d given, assuming {} for DST resolution",
-            today_in_zone(&opts.to)
+            assumed_date(line, opts.from.as_deref(), &opts.to).unwrap_or_default()
         );
     }
 }
