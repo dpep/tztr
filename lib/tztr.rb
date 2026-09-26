@@ -54,15 +54,15 @@ module Tztr
     # RFC 2822
     /\b(?:#{DAY}, )?\d{1,2} #{MON} \d{4} \d{2}:\d{2}(?::\d{2})? (?:[+-]\d{4}\b|(?:#{ABBREVIATION})\b)/,
     # ISO 8601 with Z or offset: 2026-04-03T12:34:56Z, 2026-04-03T12:34:56.123+00:00
-    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/,
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})/,
     # ISO 8601 without timezone: 2026-04-03T12:34:56
-    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?/,
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?/,
     # Date space 12-hour time: 2026-04-03 03:45:00 PM, 2026-04-03 03:45 PM PST
     /\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{MERIDIEM}(?: ?#{ZONE})?/,
     # Date space time with tz: 2026-04-03 12:34:56 UTC
-    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? ?#{ZONE}/,
+    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{ZONE}/,
     # Date space time: 2026-04-03 12:34:56
-    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?/,
+    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?/,
     # Time with tz: 12:34:56 UTC, 12:34 PST
     /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? ?#{ZONE}/,
     # Time with offset: 12:34:56+00:00. Seconds required and the offset in range,
@@ -96,7 +96,7 @@ module Tztr
   # A timestamp found in a line: its byte offset, its text, what it is read as
   # (the text plus any zone or meridiem it shares with the end of its range or
   # list), and that range or list for -j.
-  Stamp = Data.define(:offset, :text, :effective, :group)
+  Stamp = Data.define(:offset, :text, :effective, :group, :days)
 
   TIMEZONE_ALIASES = {
     # UTC
@@ -282,6 +282,17 @@ module Tztr
       stamps[i] = stamps[i].with(effective: range_start(stamps[i].effective, stamps[i + 1].effective)) if joins[i]
     end
 
+    # A later member earlier on the clock is on the next day: 11:30 PM to
+    # 12:30 AM ends tomorrow.
+    joins.each_with_index do |join, i|
+      next unless join
+
+      head, tail = stamps[i], stamps[i + 1]
+      rolls = detect_zone(head.effective) == detect_zone(tail.effective) &&
+              minute_of_day(tail.effective) < minute_of_day(head.effective)
+      stamps[i + 1] = tail.with(days: head.days + (rolls ? 1 : 0))
+    end
+
     group_ids = joins.reduce([0]) { |ids, join| ids << (join ? ids.last : ids.last + 1) }
     kept = stamps.each_index.reject { |i| stamps[i].effective.match?(BARE_TIME) }
     kept = stamps.each_index.to_a if kept.empty?
@@ -300,7 +311,7 @@ module Tztr
     stamps = []
     line.scan(TIMESTAMP) do
       offset, text = $~.byteoffset(0)[0], $~[0]
-      stamps << Stamp.new(offset:, text:, effective: reading(text), group: nil)
+      stamps << Stamp.new(offset:, text:, effective: reading(text), group: nil, days: 0)
     end
     stamps
   end
@@ -332,7 +343,7 @@ module Tztr
       m = gap&.match(RANGE_HOUR)
       next [stamp] unless m && (1..12).cover?(m[:hour].to_i)
 
-      head = Stamp.new(offset: gap_start + m.byteoffset(:hour)[0], text: m[:hour], effective: "#{m[:hour]}:00", group: nil)
+      head = Stamp.new(offset: gap_start + m.byteoffset(:hour)[0], text: m[:hour], effective: "#{m[:hour]}:00", group: nil, days: 0)
       [head, stamp]
     end
   end
@@ -351,6 +362,13 @@ module Tztr
   def text_between(line, from, to)
     text = line.byteslice(from, to - from).force_encoding(Encoding::UTF_8)
     text if text.valid_encoding?
+  end
+
+  def minute_of_day(time)
+    m = time.match(TIME_PARTS)
+    hour = m[:hour].to_i
+    hour = hour % 12 + (m[:meridiem].start_with?('P', 'p') ? 12 : 0) if m[:meridiem]
+    hour * 60 + m[:clock].split(':')[1].to_i
   end
 
   def range_start(head, tail)
@@ -373,6 +391,7 @@ module Tztr
 
   # Parsed as its effective reading, formatted to mirror what was written.
   def convert_stamp(stamp, from:, to:, format:, date:)
+    date = ((date ? Date.parse(date) : Time.now.to_date) + stamp.days).strftime('%F') if stamp.days.positive?
     time = parse(stamp.effective, from:, to:, date:)
     format_time(time.localtime, format, stamp.text)
   rescue ArgumentError
@@ -463,6 +482,15 @@ module Tztr
     str.match?(/\A\d{1,2}:/)
   end
 
+  # A dated timestamp's clock to the precision it was written with.
+  def written_clock(original)
+    case original
+    when /\A\S+[T ]\d{1,2}:\d{2}:\d{2}\.\d/ then '%H:%M:%S.%L'
+    when /\A\S+[T ]\d{1,2}:\d{2}:\d{2}/ then '%H:%M:%S'
+    else '%H:%M'
+    end
+  end
+
   def format_time(time, fmt, original)
     tz = time.utc_offset == 0 ? 'Z' : time.strftime('%:z')
 
@@ -479,13 +507,9 @@ module Tztr
 
     case original
     when /^\d{4}-\d{2}-\d{2}T/
-      has_frac = original.match?(/T\d{2}:\d{2}:\d{2}\.\d+/)
-      base = has_frac ? time.strftime('%Y-%m-%dT%H:%M:%S.%L') : time.strftime('%Y-%m-%dT%H:%M:%S')
-      base + tz
+      time.strftime("%Y-%m-%dT#{written_clock(original)}") + tz
     when /^\d{4}-\d{2}-\d{2} /
-      has_frac = original.match?(/ \d{2}:\d{2}:\d{2}\.\d+/)
-      base = has_frac ? time.strftime('%Y-%m-%d %H:%M:%S.%L') : time.strftime('%Y-%m-%d %H:%M:%S')
-      base + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
+      time.strftime("%Y-%m-%d #{written_clock(original)}") + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     when /^\d{1,2}:\d{2}(?::\d{2})/
       time.strftime('%H:%M:%S') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     when /^\d{1,2}:\d{2}/, /\A\d{1,2}(?:\z| ?[AaPp])/

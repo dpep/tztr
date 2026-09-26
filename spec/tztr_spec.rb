@@ -296,6 +296,36 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
     it "converts a 12-hour time carrying a date" do
       expect(Tztr.translate("2026-04-03 03:45:00 PM", to: "UTC"))
         .to eq("2026-04-03 15:45:00 UTC")
+      expect(Tztr.translate("2026-04-03 3:45 PM", to: "UTC")).to eq("2026-04-03 15:45 UTC")
+    end
+  end
+
+  describe "dated timestamps without seconds" do
+    it "keeps the written date instead of assuming today" do
+      expect(Tztr.translate("2026-01-15 23:30", from: "UTC", to: "America/Los_Angeles"))
+        .to eq("2026-01-15 15:30 PST")
+      expect(Tztr.translate("2026-01-15 23:30 UTC", to: "America/Los_Angeles")).to eq("2026-01-15 15:30 PST")
+    end
+
+    it "converts minute-precision ISO 8601, offset included" do
+      expect(Tztr.translate("2026-12-31T23:30+05:30", to: "Pacific/Auckland")).to eq("2027-01-01T07:00+13:00")
+      expect(Tztr.translate("2026-12-31T23:30Z", to: "Pacific/Auckland")).to eq("2027-01-01T12:30+13:00")
+      expect(Tztr.translate("2026-12-31T23:30", from: "UTC", to: "UTC")).to eq("2026-12-31T23:30Z")
+    end
+  end
+
+  describe "ranges crossing midnight" do
+    def iso(line) = Tztr.translate(line, to: "UTC", format: :iso, date: "2026-04-03")
+
+    it "moves a later member that is earlier on the clock to the next day" do
+      expect(iso("11:30 PM to 12:30 AM PST")).to eq("2026-04-04 07:30:00Z to 2026-04-04 08:30:00Z")
+      expect(iso("11:30 PM, 12:15 AM or 1:00 AM PST"))
+        .to eq("2026-04-04 07:30:00Z, 2026-04-04 08:15:00Z or 2026-04-04 09:00:00Z")
+      expect(iso("22:00-02:00 UTC")).to eq("2026-04-03 22:00:00Z-2026-04-04 02:00:00Z")
+    end
+
+    it "leaves a range that stays within one day alone" do
+      expect(iso("9:00 to 17:00 UTC")).to eq("2026-04-03 09:00:00Z to 2026-04-03 17:00:00Z")
     end
 
     it "converts a 12-hour time carrying a zone" do

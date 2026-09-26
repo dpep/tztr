@@ -98,13 +98,21 @@ takes your default zone.
 A time with a UTC offset needs seconds (`12:34:56-05:00`), so `15:30-16:45` is
 read as a range.
 
-When a range crosses midnight, the preserved format shows only the clock.
-`-F iso` shows the dates too:
+In a range or list with no date, a member that is earlier on the clock than
+the one before it is on the next day. The preserved format shows only the
+clock; `-F iso` shows the dates too:
 
 ```bash
-echo '3:30 to 4:45 PM PST' | tztr -t utc -d 2026-04-03 -F iso
-# 2026-04-03 23:30:00Z to 2026-04-04 00:45:00Z
+echo '11:30 PM to 12:30 AM PST' | tztr -t utc -d 2026-04-03 -F iso
+# 2026-04-04 07:30:00Z to 2026-04-04 08:30:00Z
 ```
+
+A date, time and zone are read together only when they are written together,
+in one of the formats above. Seconds are optional in every dated format
+(`2026-04-03 15:30`, `2026-04-03T15:30Z`). A date in another column
+(`2026-12-31 | 23:30:00 | UTC`), a syslog date with no year
+(`Sep 25 22:14:42`), or a word like `tomorrow` is not attached to the time
+beside it, which converts as a time alone.
 
 Zone abbreviations inside text are recognized in uppercase (`PST`) or
 lowercase (`pst`), but not mixed case. Six are uppercase only, because
@@ -117,10 +125,6 @@ one:
 echo '15:30 Pst' | tztr -v
 # tztr: ignored "Pst": a zone abbreviation is matched in all uppercase or all lowercase
 ```
-
-One dent in the format-preserving promise: a date paired with a 12-hour time
-and no seconds gains a seconds field it never had — `2026-04-03 3:45 PM`
-converts to `2026-04-03 15:45:00 UTC`.
 
 ### JSON output (for agents & scripts)
 

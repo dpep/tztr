@@ -211,6 +211,21 @@ CORE_LINES = [
   "25 Sep 2026 22:14 PDT",
   "Date: Sat, 5 Sep 2026 12:00:00 GMT",
   "Fri, 25 Sep 2026 22:14:42 +0530 then 0:05",
+
+  # --- date boundaries: dated timestamps without seconds; ranges past midnight
+  "2026-01-15 23:30",
+  "2026-01-15 23:30 UTC",
+  "2026-12-31T23:30+05:30",
+  "2026-12-31T23:30Z",
+  "2026-12-31T23:30",
+  "2026-04-03 3:45 PM",
+  "2026-02-28T23:30-10:00",
+  "2028-02-28T23:30-10:00",
+  "11:30 PM to 12:30 AM PST",
+  "11:30 PM, 12:15 AM or 1:00 AM PST",
+  "22:00-02:00 UTC",
+  "9:00 to 17:00 UTC",
+  "23:00 to 01:00 to 03:00",
 ].freeze
 
 CORE_ARGS = [

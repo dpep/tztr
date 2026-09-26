@@ -121,17 +121,17 @@ fn timestamp() -> &'static BytesRegex {
                 r"\b(?:{DAY}, )?\d{{1,2}} {MON} \d{{4}} \d{{2}}:\d{{2}}(?::\d{{2}})? (?:[+-]\d{{4}}\b|(?:{zone})\b)"
             ),
             // ISO 8601 with Z or offset
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})".to_string(),
+            format!(r"\d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}{secs}(?:Z|[+-]\d{{2}}:?\d{{2}})"),
             // ISO 8601 without timezone
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
+            format!(r"\d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}{secs}"),
             // Date space 12-hour time — above the with-tz pattern, and the
             // date must be part of the match or the time resolves its DST
             // against today instead of the date beside it.
             format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{1,2}}:\d{{2}}{secs}{mer}"),
             // Date space time with tz
-            format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)? ?{tz}"),
+            format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}{secs} ?{tz}"),
             // Date space time
-            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?".to_string(),
+            format!(r"\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}{secs}"),
             // 12-hour time
             format!(r"\b\d{{1,2}}:\d{{2}}{secs}{mer}"),
             // Time with tz
@@ -265,6 +265,9 @@ struct Stamp<'a> {
     text: &'a str,
     effective: String,
     group: Option<Group>,
+    /// Days after the reference date, for a later member of a range or list
+    /// that is earlier on the clock.
+    days: i64,
 }
 
 /// The range or list a timestamp belongs to, as `-j` reports it.
@@ -299,6 +302,18 @@ fn timestamps(line: &[u8]) -> Vec<Stamp<'_>> {
         if joins[i].is_some() {
             stamps[i].effective = range_start(&stamps[i].effective, &stamps[i + 1].effective);
         }
+    }
+
+    // A later member earlier on the clock is on the next day: 11:30 PM to
+    // 12:30 AM ends tomorrow.
+    for i in 0..joins.len() {
+        if joins[i].is_none() {
+            continue;
+        }
+        let (head, tail) = (&stamps[i], &stamps[i + 1]);
+        let rolls = detect_zone(&head.effective) == detect_zone(&tail.effective)
+            && minute_of_day(&tail.effective) < minute_of_day(&head.effective);
+        stamps[i + 1].days = stamps[i].days + i64::from(rolls);
     }
 
     let mut group_ids = vec![0];
@@ -358,6 +373,7 @@ fn scan_stamps(line: &[u8]) -> Vec<Stamp<'_>> {
                 text,
                 effective: reading(text),
                 group: None,
+                days: 0,
             }
         })
         .collect()
@@ -443,6 +459,7 @@ fn with_range_hours<'a>(line: &'a [u8], stamps: Vec<Stamp<'a>>) -> Vec<Stamp<'a>
                 text,
                 effective: format!("{text}:00"),
                 group: None,
+                days: 0,
             });
         }
         prev_end = stamp.end;
@@ -464,6 +481,28 @@ fn join_between(line: &[u8], head: &Stamp, tail: &Stamp) -> Option<Join> {
     } else {
         None
     }
+}
+
+fn minute_of_day(time: &str) -> u32 {
+    let Some(c) = time_parts_re().captures(time) else {
+        return 0;
+    };
+    let mut hour: u32 = c["hour"].parse().unwrap_or(0);
+    if let Some(m) = c.name("meridiem") {
+        hour = hour % 12
+            + if m.as_str().starts_with(['P', 'p']) {
+                12
+            } else {
+                0
+            };
+    }
+    let minute: u32 = c["clock"]
+        .split(':')
+        .nth(1)
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0);
+    hour * 60 + minute
 }
 
 fn range_start(head: &str, tail: &str) -> String {
@@ -631,6 +670,23 @@ fn convert_stamp(
     format: Option<Format>,
     date: Option<&str>,
 ) -> Option<String> {
+    let rolled;
+    let date = if stamp.days > 0 {
+        let base = match date {
+            Some(d) => d.parse::<Date>().ok()?,
+            None => {
+                let (y, m, d) = today_in(to_tz);
+                Date::new(y, m, d).ok()?
+            }
+        };
+        rolled = base
+            .checked_add(Span::new().days(stamp.days))
+            .ok()?
+            .to_string();
+        Some(rolled.as_str())
+    } else {
+        date
+    };
     let zoned = parse(&stamp.effective, from_tz, to_tz, date)?;
     Some(format_time(&zoned, format, stamp.text))
 }
@@ -958,19 +1014,9 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
 
     // Preserve input format.
     if iso_t_re().is_match(original) {
-        let base = if frac_re().is_match(original) {
-            format!("{}.{}", strf(zoned, "%Y-%m-%dT%H:%M:%S"), millis(zoned))
-        } else {
-            strf(zoned, "%Y-%m-%dT%H:%M:%S")
-        };
-        format!("{base}{tz}")
+        format!("{}{tz}", written_clock(zoned, original, "%Y-%m-%dT"))
     } else if date_space_re().is_match(original) {
-        let base = if frac_re().is_match(original) {
-            format!("{}.{}", strf(zoned, "%Y-%m-%d %H:%M:%S"), millis(zoned))
-        } else {
-            strf(zoned, "%Y-%m-%d %H:%M:%S")
-        };
-        format!("{base} {abbrev}")
+        format!("{} {abbrev}", written_clock(zoned, original, "%Y-%m-%d "))
     } else if has_seconds_re().is_match(original) {
         format!("{} {abbrev}", strf(zoned, "%H:%M:%S"))
     } else if hour_minute_re().is_match(original) || hour_alone_re().is_match(original) {
@@ -1005,6 +1051,26 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
     } else {
         format!("{} {abbrev}", strf(zoned, "%Y-%m-%d %H:%M:%S"))
     }
+}
+
+/// A dated timestamp to the precision its clock was written with.
+fn written_clock(zoned: &Zoned, original: &str, date: &str) -> String {
+    if frac_re().is_match(original) {
+        format!(
+            "{}.{}",
+            strf(zoned, &format!("{date}%H:%M:%S")),
+            millis(zoned)
+        )
+    } else if dated_seconds_re().is_match(original) {
+        strf(zoned, &format!("{date}%H:%M:%S"))
+    } else {
+        strf(zoned, &format!("{date}%H:%M"))
+    }
+}
+
+fn dated_seconds_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\S+[T ]\d{1,2}:\d{2}:\d{2}").unwrap())
 }
 
 fn strf(zoned: &Zoned, fmt: &str) -> String {
@@ -1703,8 +1769,63 @@ mod tests {
         // The date has to be part of the match: matching only `3:45 PM` leaves
         // the timestamp resolving its DST against *today* instead of the date
         // sitting right next to it.
-        assert_eq!(tr("2026-04-03 3:45 PM", "UTC"), "2026-04-03 15:45:00 UTC");
-        assert_eq!(tr("2026-04-03 03:45 PM", "UTC"), "2026-04-03 15:45:00 UTC");
+        assert_eq!(tr("2026-04-03 3:45 PM", "UTC"), "2026-04-03 15:45 UTC");
+        assert_eq!(tr("2026-04-03 03:45 PM", "UTC"), "2026-04-03 15:45 UTC");
+    }
+
+    #[test]
+    fn a_dated_timestamp_without_seconds_keeps_its_date() {
+        assert_eq!(
+            translate(
+                "2026-01-15 23:30",
+                "America/Los_Angeles",
+                Some("UTC"),
+                None,
+                None
+            ),
+            "2026-01-15 15:30 PST"
+        );
+        assert_eq!(
+            tr("2026-01-15 23:30 UTC", "America/Los_Angeles"),
+            "2026-01-15 15:30 PST"
+        );
+    }
+
+    #[test]
+    fn minute_precision_iso_converts() {
+        assert_eq!(
+            tr("2026-12-31T23:30+05:30", "Pacific/Auckland"),
+            "2027-01-01T07:00+13:00"
+        );
+        assert_eq!(
+            tr("2026-12-31T23:30Z", "Pacific/Auckland"),
+            "2027-01-01T12:30+13:00"
+        );
+        assert_eq!(
+            translate("2026-12-31T23:30", "UTC", Some("UTC"), None, None),
+            "2026-12-31T23:30Z"
+        );
+    }
+
+    #[test]
+    fn a_range_crossing_midnight_ends_the_next_day() {
+        let iso = |l| translate(l, "UTC", None, Some(Format::Iso), Some("2026-04-03"));
+        assert_eq!(
+            iso("11:30 PM to 12:30 AM PST"),
+            "2026-04-04 07:30:00Z to 2026-04-04 08:30:00Z"
+        );
+        assert_eq!(
+            iso("11:30 PM, 12:15 AM or 1:00 AM PST"),
+            "2026-04-04 07:30:00Z, 2026-04-04 08:15:00Z or 2026-04-04 09:00:00Z"
+        );
+        assert_eq!(
+            iso("22:00-02:00 UTC"),
+            "2026-04-03 22:00:00Z-2026-04-04 02:00:00Z"
+        );
+        assert_eq!(
+            iso("9:00 to 17:00 UTC"),
+            "2026-04-03 09:00:00Z to 2026-04-03 17:00:00Z"
+        );
     }
 
     #[test]

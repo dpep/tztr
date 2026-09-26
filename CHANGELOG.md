@@ -19,10 +19,12 @@ that relied on an unrecognized timezone quietly falling back to UTC.
 - `-d/--date` supplies a reference date for time-only inputs, so DST resolves against the right day. It takes `2026-01-15`, `2026/01/15`, `20260115`, `January 15, 2026`, `Jan 15 2026` or `15 January 2026` — month names full or exactly three letters — and validates the real calendar. Anything else is an error.
 - Ranges and lists share the zone and AM/PM written at their end: `from 3:30 to 4:45 PM PST` and `3:00, 4:00 or 5:00 PM PST` convert every member. `11:30 to 1:00 PM` starts in the morning, and `9-9:15am` reads the bare `9` as the range's start. A range is joined by `-`, `–`, `—`, `to`, `until`, `till`, `through` or `thru`; a list by commas, `or` and `and`.
 - `-v` names a mixed-case zone it passed over (`15:30 Pst`).
-- 12-hour times: `11:30:00 PM`, `12:30 AM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`, and hours with AM/PM: `9am`, `9 PM PST`. One rough edge: a date plus a 12-hour time with no seconds gains a seconds field, so `2026-04-03 3:45 PM` comes back as `2026-04-03 15:45:00 UTC`.
+- 12-hour times: `11:30:00 PM`, `12:30 AM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`, and hours with AM/PM: `9am`, `9 PM PST`.
 
 #### Fixed
 
+- A dated timestamp without seconds keeps its date. `2026-01-15 23:30` used to be read as a time alone, resolved against today, an hour off in winter; `2026-12-31T23:30+05:30` came out garbled and `2026-12-31T23:30Z` was ignored.
+- In a range or list with no date, a member earlier on the clock than the one before it is on the next day: `11:30 PM to 12:30 AM` ends tomorrow.
 - date(1) output and RFC 2822 dates convert as one timestamp. `date | tztr -t est` used to convert only the clock, so `Fri Sep 25 22:14:42 PDT 2026` came out as `Fri Sep 25 01:14:42 EDT 2026`, a day early; it is now `Sat Sep 26 01:14:42 EDT 2026`.
 - Every timestamp on a line converts, whatever its format. Only the first format found used to convert, so in `{"ts":"2026-04-03T12:00:00Z","msg":"at 15:30 UTC"}` the `15:30 UTC` was left alone with no warning. A bare time with no date, zone or AM/PM is left alone when another timestamp on its line names a date, zone or AM/PM. It is most likely a duration, as in `2026-04-03T12:00:00Z took 0:05`.
 - A time with a UTC offset must include seconds (`12:34:56-05:00`), with the offset within ±14 hours. `15:30-16:45 PST` used to be read as 15:30 at an offset of −16:45.
