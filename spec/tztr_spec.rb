@@ -396,6 +396,15 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       expect(tr("2026-09-25T22:14:42,123456789-07:00")).to eq("2026-09-26T05:14:42,123456789Z")
     end
 
+it "keeps comma milliseconds at the end of a line" do
+  expect(tr("2026-04-03 12:00:00,123\n", from: "UTC")).to eq("2026-04-03 12:00:00,123 UTC\n")
+  expect(tr("2026-04-03 12:00:00,123\r\n", from: "UTC")).to eq("2026-04-03 12:00:00,123 UTC\r\n")
+end
+
+it "reads date(1) output without seconds" do
+  expect(tr("Fri Sep 25 22:14 PDT 2026")).to eq("Sat Sep 26 05:14 UTC 2026")
+end
+
     it "keeps a CSV column after the seconds" do
       expect(tr("2026-04-03 12:00:00,200,OK", from: "UTC")).to eq("2026-04-03 12:00:00 UTC,200,OK")
       expect(tr("2026-04-03 12:00:00,123 INFO", from: "UTC")).to eq("2026-04-03 12:00:00,123 UTC INFO")

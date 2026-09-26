@@ -44,6 +44,6 @@ Run `tztr -h` for all options.
 ```rust
 use tztr::translate;
 
-let out = translate("log 2026-04-03T12:00:00Z event", "America/Los_Angeles", None, None, false, None);
+let out = translate("log 2026-04-03T12:00:00Z event", "America/Los_Angeles", None, None, None);
 assert_eq!(out, "log 2026-04-03T05:00:00-07:00 event");
 ```

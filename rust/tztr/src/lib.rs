@@ -136,7 +136,7 @@ fn timestamp() -> &'static BytesRegex {
             ),
             // date(1), ctime and ls -lT
             format!(
-                r"\b(?:{DAY} )?{MON}  ?[0-9]{{1,2}} [0-9]{{1,2}}:[0-9]{{2}}:[0-9]{{2}} (?:{} )?[0-9]{{4}}\b",
+                r"\b(?:{DAY} )?{MON}  ?[0-9]{{1,2}} [0-9]{{1,2}}:[0-9]{{2}}(?::[0-9]{{2}})? (?:{} )?[0-9]{{4}}\b",
                 date_zone()
             ),
             // RFC 2822
@@ -434,7 +434,9 @@ fn scan_stamps(line: &[u8]) -> Vec<Stamp<'_>> {
             let mut text = ascii(m.as_bytes());
             // ,200 before another comma is a CSV column, not milliseconds.
             let after = line.get(m.end()).copied();
-            if csv_frac_re().is_match(text) && !matches!(after, None | Some(b' ' | b'\t' | b']')) {
+            if csv_frac_re().is_match(text)
+                && !matches!(after, None | Some(b' ' | b'\t' | b']' | b'\r' | b'\n'))
+            {
                 text = &text[..text.len() - 4];
             }
             Stamp {
@@ -1318,7 +1320,10 @@ fn format_time(zoned: &Zoned, fmt: Option<Format>, original: &str) -> String {
         };
         format!(
             "{} {} {}",
-            strf(zoned, &format!("{weekday}%b {day} %H:%M:%S")),
+            strf(
+                zoned,
+                &format!("{weekday}%b {day} {}", written_12h(&c["time"], false))
+            ),
             written_zone(zoned, c.name("zone").map(|z| z.as_str())),
             strf(zoned, "%Y")
         )
@@ -1867,6 +1872,26 @@ mod tests {
         assert_eq!(
             hunt("2026-09-25T22:14:42,123456789-07:00", "UTC", None, None),
             "2026-09-26T05:14:42,123456789Z"
+        );
+    }
+
+    #[test]
+    fn comma_milliseconds_at_the_end_of_a_line_are_kept() {
+        assert_eq!(
+            hunt("2026-04-03 12:00:00,123\n", "UTC", Some("UTC"), None),
+            "2026-04-03 12:00:00,123 UTC\n"
+        );
+        assert_eq!(
+            hunt("2026-04-03 12:00:00,123\r\n", "UTC", Some("UTC"), None),
+            "2026-04-03 12:00:00,123 UTC\r\n"
+        );
+    }
+
+    #[test]
+    fn date_1_output_without_seconds_is_read() {
+        assert_eq!(
+            hunt("Fri Sep 25 22:14 PDT 2026", "UTC", None, None),
+            "Sat Sep 26 05:14 UTC 2026"
         );
     }
 

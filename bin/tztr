@@ -15,12 +15,12 @@ HELP_DOC = {
   name: 'tztr',
   version: Tztr::VERSION,
   usage: 'tztr [options] [file | now]',
-  summary: 'Timezone Translator - convert timestamps between timezones. Reads from stdin or file.',
+  summary: 'Timezone Translator - convert timestamps between timezones. Reads from stdin, files, or the clock (now).',
   options: [
-    { short: '-f', long: '--from', arg: 'TZ', description: 'Input timezone (default: auto-detect)' },
+    { short: '-f', long: '--from', arg: 'TZ', description: 'Input timezone for timestamps that name none (default: $TZ, else -t)' },
     { short: '-t', long: '--to', arg: 'TZ', description: 'Output timezone (default: $TZ, else UTC)' },
     { short: '-l', long: '--list', arg: nil, description: 'List timezone aliases' },
-    { short: '-i', long: '--in-place', arg: nil, description: 'Edit file in place' },
+    { short: '-i', long: '--in-place', arg: nil, description: 'Edit files in place' },
     { short: '-F', long: '--format', arg: 'FMT', description: 'Output format: iso, short, time (default: preserve input)' },
     { short: '-d', long: '--date', arg: 'DATE', description: 'Reference date for time-only inputs (resolves DST)' },
     { short: '-j', long: '--json', arg: nil, description: 'Emit a JSON array of matches' },
@@ -70,13 +70,13 @@ end
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: tztr [options] [file | now]"
   opts.separator ""
-  opts.separator "Timezone Translator - convert timestamps between timezones. Reads from stdin or file."
+  opts.separator "Timezone Translator - convert timestamps between timezones. Reads from stdin, files, or the clock (now)."
   opts.separator ""
 
-  opts.on("-f", "--from TZ", "Input timezone (default: auto-detect)") { |v| options[:from] = v }
+  opts.on("-f", "--from TZ", "Input timezone for timestamps that name none (default: $TZ, else -t)") { |v| options[:from] = v }
   opts.on("-t", "--to TZ", "Output timezone (default: $TZ, else UTC)") { |v| options[:to] = v }
   opts.on("-l", "--list", "List timezone aliases") { Tztr::TIMEZONE_ALIASES.sort.each { |k, v| puts "%-12s %s" % [k, v] }; exit }
-  opts.on("-i", "--in-place", "Edit file in place") { options[:inplace] = true }
+  opts.on("-i", "--in-place", "Edit files in place") { options[:inplace] = true }
   opts.on("-F", "--format FMT", "Output format: iso, short, time (default: preserve input)") { |v| options[:format] = parse_format.call(v) }
   opts.on("-d", "--date DATE", "Reference date for time-only inputs (resolves DST)") { |v| options[:date] = v }
   opts.on("-j", "--json", "Emit a JSON array of matches") { options[:json] = true }

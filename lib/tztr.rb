@@ -93,7 +93,7 @@ module Tztr
     # glibc's locale date(1)
     /\b#{DAY} \d{1,2} #{MON} \d{4} \d{1,2}:\d{2}(?::\d{2})?(?: [AP]M)?(?: #{DATE_ZONE})?\b/,
     # date(1), ctime and ls -lT
-    /\b(?:#{DAY} )?#{MON}  ?\d{1,2} \d{1,2}:\d{2}:\d{2} (?:#{DATE_ZONE} )?\d{4}\b/,
+    /\b(?:#{DAY} )?#{MON}  ?\d{1,2} \d{1,2}:\d{2}(?::\d{2})? (?:#{DATE_ZONE} )?\d{4}\b/,
     # RFC 2822
     /\b(?:#{DAY}, )?\d{1,2} #{MON} \d{4} \d{1,2}:\d{2}(?::\d{2})?(?: [AP]M)? (?:[+-]\d{4}\b|(?:#{ABBREVIATION})\b)/,
     # ISO 8601 with Z or offset: 2026-04-03T12:34:56Z, 2026-04-03T12:34:56.123+00:00
@@ -395,7 +395,7 @@ module Tztr
       next if text.match?(/\A\d{1,2}:/) && (before == ':' || after.match?(/\A:\d/))
 
       # ,200 before another comma is a CSV column, not milliseconds.
-      text = text.delete_suffix(text[-4..]) if text.match?(/,\d{3}\z/) && !after.match?(/\A(?:[ \t\]]|\z)/)
+      text = text.delete_suffix(text[-4..]) if text.match?(/,\d{3}\z/) && !after.match?(/\A(?:[ \t\]\r\n]|\z)/)
       stamps << Stamp.new(offset:, text:, effective: reading(text), group: nil, days: 0)
     end
     stamps
@@ -709,7 +709,7 @@ module Tztr
     when UNIX_DATE
       m = $~
       day = original.match?(/#{MON}  /) ? '%e' : '%-d'
-      time.strftime("#{'%a ' if m[:weekday]}%b #{day} %H:%M:%S ") + written_zone(time, m[:zone]) + time.strftime(' %Y')
+      time.strftime("#{'%a ' if m[:weekday]}%b #{day} %H:%M#{':%S' if m[:time].count(':') == 2} ") + written_zone(time, m[:zone]) + time.strftime(' %Y')
     when LOCALE_DATE
       m = $~
       clock = m[:time].count(':') == 2 ? '%H:%M:%S' : '%H:%M'

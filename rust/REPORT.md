@@ -2,8 +2,8 @@
 
 `tztr` ships two implementations from one repo: the Ruby gem (reference) and
 this Rust crate. They are kept functionally identical; CI runs a CLI parity
-harness (`script/parity.rb`) that diffs both binaries across a matrix of
-inputs, args, and `TZ` values.
+harness (`script/parity.rb`) that diffs both binaries' stdout, stderr and exit
+status across a matrix of inputs, args, and `TZ` values.
 
 ## Approach
 
@@ -29,8 +29,8 @@ matched abbreviations the parser then silently ignored — `15:30 JST` came out
 as a *local* time, nine hours wrong, with no signal.
 
 The list is the union of the abbreviations Ruby's `Time.parse` resolves
-natively (`UT UTC GMT` plus E/C/M/P × ST/DT) and the abbreviation-shaped keys of
-`TIMEZONE_ALIASES` (`Z ET CT MT PT HST AKST AKDT CET CEST BST IST JST KST HKT
+natively (`UT UTC GMT Z` plus E/C/M/P × ST/DT) and the abbreviation-shaped keys
+of `TIMEZONE_ALIASES` (`ET CT MT PT HST AKST AKDT CET CEST BST IST JST KST HKT
 AEST AEDT NZST NZDT`). City nicknames (`sf`, `nyc`) are deliberately absent:
 they are `-t`/`-f` values, not things to look for inside text.
 
@@ -44,6 +44,19 @@ Every abbreviation that names standard or daylight time is a **fixed offset**
 always +02:00, whatever the date, as `Time.parse` always read the US ones.
 Only the generic `ET`, `CT`, `MT` and `PT` resolve **through the alias table
 to a real zone**, so they follow DST.
+
+**The source zone overrides the table.** The abbreviations the source zone
+(`-f`, else `$TZ`) itself uses are read in its sense: Ruby's
+`local_abbreviations` samples the zone's `%Z` in mid-January and mid-July of
+the current year, and Rust mirrors it. With `TZ=Asia/Shanghai`, `CST` is
++08:00; with `TZ=Europe/Helsinki`, `EEST` (not in the list at all) converts.
+A US, UTC or unset source zone uses no abbreviation that differs from the
+table, so nothing changes there.
+
+**An unknown zone leaves the timestamp alone.** A `date`-shaped line accepts
+any capitalized word as its zone (`DATE_ZONE`), so that one tztr can't resolve
+(`WIB`) leaves the whole date as written instead of half-converting it; `-v`
+names it.
 
 ## Quirks replicated for parity
 
@@ -60,58 +73,64 @@ to a real zone**, so they follow DST.
   ICU. Ruby was changed to agree; there is a test pinning it on this side so a
   jiff default change cannot move it silently.
 
-## Accepted divergences
+## Option parsing
 
-Deliberate, and excluded from the parity matrix:
+Both sides require exact spellings. Ruby's `OptionParser` would accept any
+unambiguous prefix (`--js`, `-F i`); `bin/tztr` sets `require_exact` and
+validates `-F` itself, so `--jso` and `-F i` are errors in both builds. `--`
+ends the options in both.
 
-- **Long-option abbreviation and `-F` value completion.** Ruby's `OptionParser`
-  accepts any unambiguous prefix (`--js`, `--det`, `-F i`) for free. The Rust
-  parser requires exact spellings. Making Ruby strict would mean fighting
-  OptionParser; making Rust lenient is code nobody asked for. `--` itself *is*
-  supported on both sides.
-
-Note that the parity harness compares **stdout and exit status only**
-(`script/parity.rb` discards stderr), so the error strings below are not covered
-by the gate and have to be kept in step by hand.
 ## Error strings
 
-One line, no backtrace, exit 1, byte-identical with Ruby. An error **about a
-particular file names it**, in both the streaming and the `-i` path — with
-several file arguments the bare message does not say which one failed:
+One line, no backtrace, exit 1, byte-identical with Ruby (the parity harness
+checks stderr). An error **about a particular file names it**, in both the
+streaming and the `-i` path, since with several file arguments the bare
+message would not say which one failed. That file is skipped and the run
+carries on:
 
     tztr: app.log: No such file or directory (os error 2)
     tztr: app.log: Is a directory (os error 21)
 
-Everything else stays bare:
+Everything else stays bare, and stops the run:
 
     tztr: unknown timezone: Bogus/Zone
     tztr: offset out of range: 15 (expected -12..14)
     tztr: invalid date: 2026-02-30
+    tztr: invalid format: i (expected iso, short, time)
     tztr: invalid option: --bogus
+    tztr: missing argument for -t
+    tztr: --json takes no argument
+    tztr: -i requires a file argument
+    tztr: -i cannot be combined with --json/--ndjson/--detect
+    tztr: -i cannot be combined with now
 
-## Known defect, deferred
+## Known asymmetry
 
-`EST` means two different things. Inside text it is a fixed −05:00 (that is what
-`Time.parse` does), but as `-f est` it resolves through the alias table to
-`America/New_York` and is DST-aware — the same token, an hour apart in summer.
-Same class as the abbreviation bug above; it needs its own parity pass and was
-deliberately left alone this round.
+An abbreviation means two different things depending on where it appears.
+Inside text, `EST` is a fixed −05:00 (as `Time.parse` reads it); as `-f est` or
+`-t est` it resolves through the alias table to `America/New_York` and follows
+DST, so the same token is an hour apart in summer. The README documents this
+as intended (`-t est` is New York time). Changing either side needs its own
+parity pass.
 
 ## Performance
 
-Measured on Apple Silicon (release build, system tzdb). Indicative, not a
-rigorous benchmark.
+Measured on Apple Silicon (release build, system tzdb, Ruby 4.0), single
+runs on a machine that wasn't quiet. Indicative, not a rigorous benchmark.
 
 | Metric | Ruby | Rust | Speedup |
 |---|---|---|---|
-| Startup (per invocation, single line) | ~44 ms | ~6.4 ms | ~6.8× |
-| Throughput (100k lines, 2 timestamps each) | 1.19 s | 0.19 s | ~6.2× |
-| Throughput (same, `-J` ndjson) | 1.32 s | 0.25 s | ~5.2× |
+| Startup (per invocation, single line) | ~50 ms | ~6 ms | ~8× |
+| Throughput (100k lines, 2 timestamps each) | 18 s | 0.64 s | ~29× |
+| Throughput (same, `-J` ndjson) | 24 s | 0.97 s | ~25× |
 
-**Binary size:** the Rust release binary is ~1.9 MB, self-contained (no Ruby
+The 0.1.0 figures were 1.2 s (Ruby) and 0.19 s (Rust) for the same shape of
+input. Both slowed as detection grew, Ruby by far the most.
+
+**Binary size:** the Rust release binary is ~2.1 MB, self-contained (no Ruby
 runtime needed). Because jiff uses the system tzdb, no timezone data is baked
 in. The Ruby implementation has no standalone binary — it needs a Ruby
 interpreter plus the (tiny) gem.
 
-Reproduce with `make build` then `ruby script/parity.rb` for correctness, or the
-commands in this repo's history for the timings.
+Reproduce with `make parity` for correctness, or the commands in this repo's
+history for the timings.

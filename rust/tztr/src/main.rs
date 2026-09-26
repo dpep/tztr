@@ -19,12 +19,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const HELP: &str = "\
 Usage: tztr [options] [file | now]
 
-Timezone Translator - convert timestamps between timezones. Reads from stdin or file.
+Timezone Translator - convert timestamps between timezones. Reads from stdin, files, or the clock (now).
 
-    -f, --from TZ                    Input timezone (default: auto-detect)
+    -f, --from TZ                    Input timezone for timestamps that name none (default: $TZ, else -t)
     -t, --to TZ                      Output timezone (default: $TZ, else UTC)
     -l, --list                       List timezone aliases
-    -i, --in-place                   Edit file in place
+    -i, --in-place                   Edit files in place
     -F, --format FMT                 Output format: iso, short, time (default: preserve input)
     -d, --date DATE                  Reference date for time-only inputs (resolves DST)
     -j, --json                       Emit a JSON array of matches
@@ -579,12 +579,12 @@ fn help_doc() -> Value {
         "name": "tztr",
         "version": VERSION,
         "usage": "tztr [options] [file | now]",
-        "summary": "Timezone Translator - convert timestamps between timezones. Reads from stdin or file.",
+        "summary": "Timezone Translator - convert timestamps between timezones. Reads from stdin, files, or the clock (now).",
         "options": [
-            {"short": "-f", "long": "--from", "arg": "TZ", "description": "Input timezone (default: auto-detect)"},
+            {"short": "-f", "long": "--from", "arg": "TZ", "description": "Input timezone for timestamps that name none (default: $TZ, else -t)"},
             {"short": "-t", "long": "--to", "arg": "TZ", "description": "Output timezone (default: $TZ, else UTC)"},
             {"short": "-l", "long": "--list", "arg": null, "description": "List timezone aliases"},
-            {"short": "-i", "long": "--in-place", "arg": null, "description": "Edit file in place"},
+            {"short": "-i", "long": "--in-place", "arg": null, "description": "Edit files in place"},
             {"short": "-F", "long": "--format", "arg": "FMT", "description": "Output format: iso, short, time (default: preserve input)"},
             {"short": "-d", "long": "--date", "arg": "DATE", "description": "Reference date for time-only inputs (resolves DST)"},
             {"short": "-j", "long": "--json", "arg": null, "description": "Emit a JSON array of matches"},
