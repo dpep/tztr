@@ -38,7 +38,21 @@ module Tztr
   # following full stop to the sentence.
   MERIDIEM = /[AaPp](?:\.[Mm]\.|\.?[Mm]\b)/
 
+  DAY = /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)/
+  MONTH_ABBRS = %w[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec].freeze
+  MON = /(?:#{MONTH_ABBRS.join('|')})/
+
+  # Dates with named months, read whole so the weekday and day roll over with
+  # the clock. date(1)/ctime: Fri Sep 25 22:14:42 PDT 2026, zone optional.
+  UNIX_DATE = /\A#{DAY} (?<mon>#{MON})  ?(?<day>\d{1,2}) (?<time>\S+) (?:(?<zone>\S+) )?(?<year>\d{4})\z/
+  # RFC 2822 / HTTP: Fri, 25 Sep 2026 22:14:42 -0700
+  RFC_DATE = /\A(?<weekday>#{DAY}, )?(?<day>\d{1,2}) (?<mon>#{MON}) (?<year>\d{4}) (?<time>\S+) (?<zone>\S+)\z/
+
   PATTERNS = [
+    # date(1) and ctime
+    /\b#{DAY} #{MON}  ?\d{1,2} \d{2}:\d{2}:\d{2} (?:(?:#{ABBREVIATION}) )?\d{4}\b/,
+    # RFC 2822
+    /\b(?:#{DAY}, )?\d{1,2} #{MON} \d{4} \d{2}:\d{2}(?::\d{2})? (?:[+-]\d{4}\b|(?:#{ABBREVIATION})\b)/,
     # ISO 8601 with Z or offset: 2026-04-03T12:34:56Z, 2026-04-03T12:34:56.123+00:00
     /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/,
     # ISO 8601 without timezone: 2026-04-03T12:34:56
@@ -219,7 +233,7 @@ module Tztr
       info = {
         # Patterns only ever match ASCII, whatever the rest of the line is.
         original: stamp.text.dup.force_encoding(Encoding::UTF_8),
-        detected_format: detect_format(stamp.text),
+        detected_format: detect_format(stamp.effective),
         detected_tz: detect_zone(stamp.effective),
       }
       info[:translated] = convert_stamp(stamp, from:, to:, format:, date:) unless detect
@@ -286,11 +300,23 @@ module Tztr
     stamps = []
     line.scan(TIMESTAMP) do
       offset, text = $~.byteoffset(0)[0], $~[0]
-      # An hour alone reads as its o'clock: 9am is 9:00am.
-      effective = text.match?(/\A\d{1,2} ?[AaPp]/) ? text.sub(/\A\d{1,2}/, '\0:00') : text
-      stamps << Stamp.new(offset:, text:, effective:, group: nil)
+      stamps << Stamp.new(offset:, text:, effective: reading(text), group: nil)
     end
     stamps
+  end
+
+  # What a timestamp is parsed as: a named-month date as YYYY-MM-DD, an hour
+  # alone as its o'clock (9am is 9:00am), anything else as written.
+  def reading(text)
+    if (m = text.match(UNIX_DATE) || text.match(RFC_DATE))
+      time = m[:time].count(':') == 1 ? "#{m[:time]}:00" : m[:time]
+      date = format('%s-%02d-%02d', m[:year], MONTH_ABBRS.index(m[:mon]) + 1, m[:day].to_i)
+      [date, time, m[:zone]].compact.join(' ')
+    elsif text.match?(/\A\d{1,2} ?[AaPp]/)
+      text.sub(/\A\d{1,2}/, '\0:00')
+    else
+      text
+    end
   end
 
   # A bare hour is only a time as the start of a range whose end has a
@@ -348,7 +374,7 @@ module Tztr
   # Parsed as its effective reading, formatted to mirror what was written.
   def convert_stamp(stamp, from:, to:, format:, date:)
     time = parse(stamp.effective, from:, to:, date:)
-    format_time(time.localtime, format, stamp.effective)
+    format_time(time.localtime, format, stamp.text)
   rescue ArgumentError
     nil
   end
@@ -462,8 +488,14 @@ module Tztr
       base + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     when /^\d{1,2}:\d{2}(?::\d{2})/
       time.strftime('%H:%M:%S') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
-    when /^\d{1,2}:\d{2}/
+    when /^\d{1,2}:\d{2}/, /\A\d{1,2}(?:\z| ?[AaPp])/
       time.strftime('%H:%M') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
+    when UNIX_DATE
+      time.strftime('%a %b %e %H:%M:%S ') + (time.utc? ? 'UTC' : time.strftime('%Z')) + time.strftime(' %Y')
+    when RFC_DATE
+      m = $~
+      zone = m[:zone].start_with?('+', '-') ? time.strftime('%z') : (time.utc? ? 'UTC' : time.strftime('%Z'))
+      time.strftime("#{'%a, ' if m[:weekday]}#{m[:day].length == 2 ? '%d' : '%-d'} %b %Y %H:%M#{':%S' if m[:time].count(':') == 2} ") + zone
     else
       time.strftime('%Y-%m-%d %H:%M:%S') + " " + (time.utc? ? 'UTC' : time.strftime('%Z'))
     end

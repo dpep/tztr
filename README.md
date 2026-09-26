@@ -70,6 +70,8 @@ echo '15:30 UTC' | tztr -t Mars/Phobos
 
 - ISO 8601: `2026-04-03T12:00:00Z`, `2026-04-03T12:00:00+05:30`
 - Date + time: `2026-04-03 12:00:00 UTC`
+- date(1) output: `Fri Sep 25 22:14:42 PDT 2026` (zone optional, as ctime writes it)
+- Email and HTTP dates (RFC 2822): `Fri, 25 Sep 2026 22:14:42 -0700`
 - Time only: `15:30 UTC`, `08:30:45 PDT`
 - 12-hour: `11:30 PM`, `3:45 p.m.`, `11:30 A.M.`, `3:45 PM PST`
 - Hour only, with AM/PM: `9am`, `9 PM PST`. A bare hour with no AM/PM is just a

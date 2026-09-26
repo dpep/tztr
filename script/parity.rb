@@ -198,6 +198,19 @@ CORE_LINES = [
   "15:30 Pst",
   "3:30 to 4:45 PM Pst",
   "15:30 Utc and 16:00 utc",
+
+  # --- named-month dates: date(1)/ctime and RFC 2822
+  "Fri Sep 25 22:14:42 PDT 2026",
+  "Fri Sep 25 22:14:42 2026",
+  "Sat Sep  5 22:14:42 UTC 2026",
+  "Fri Sep 25 22:14:42 JST 2026",
+  "Fri Sep 25 22:14:42 pdt 2026",
+  "Mon Feb 30 12:00:00 UTC 2026",
+  "Sun Nov  1 01:30:00 2026",
+  "Fri, 25 Sep 2026 22:14:42 -0700",
+  "25 Sep 2026 22:14 PDT",
+  "Date: Sat, 5 Sep 2026 12:00:00 GMT",
+  "Fri, 25 Sep 2026 22:14:42 +0530 then 0:05",
 ].freeze
 
 CORE_ARGS = [

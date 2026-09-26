@@ -23,6 +23,7 @@ that relied on an unrecognized timezone quietly falling back to UTC.
 
 #### Fixed
 
+- date(1) output and RFC 2822 dates convert as one timestamp. `date | tztr -t est` used to convert only the clock, so `Fri Sep 25 22:14:42 PDT 2026` came out as `Fri Sep 25 01:14:42 EDT 2026`, a day early; it is now `Sat Sep 26 01:14:42 EDT 2026`.
 - Every timestamp on a line converts, whatever its format. Only the first format found used to convert, so in `{"ts":"2026-04-03T12:00:00Z","msg":"at 15:30 UTC"}` the `15:30 UTC` was left alone with no warning. A bare time with no date, zone or AM/PM is left alone when another timestamp on its line names a date, zone or AM/PM. It is most likely a duration, as in `2026-04-03T12:00:00Z took 0:05`.
 - A time with a UTC offset must include seconds (`12:34:56-05:00`), with the offset within ±14 hours. `15:30-16:45 PST` used to be read as 15:30 at an offset of −16:45.
 - A file that can't be read no longer stops a multi-file run. It is reported, every other file is still processed, and the exit status is 1, as with `cat` and `sed -i`. With `-i` it used to leave the job half-done: files before the bad one rewritten, files after it untouched.

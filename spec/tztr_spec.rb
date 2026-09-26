@@ -144,6 +144,31 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
       end
     end
 
+    describe "dates with named months" do
+      def tr(line, to: "America/New_York") = Tztr.translate(line, to:, from: "America/Los_Angeles")
+
+      it "converts date(1) output as one timestamp, weekday and day included" do
+        expect(tr("Fri Sep 25 22:14:42 PDT 2026")).to eq("Sat Sep 26 01:14:42 EDT 2026")
+        expect(tr("Fri Sep 25 22:14:42 2026")).to eq("Sat Sep 26 01:14:42 EDT 2026")
+        expect(tr("Sat Sep  5 22:14:42 UTC 2026", to: "America/Los_Angeles")).to eq("Sat Sep  5 15:14:42 PDT 2026")
+      end
+
+      it "converts an RFC 2822 date, keeping its shape" do
+        expect(tr("Fri, 25 Sep 2026 22:14:42 -0700")).to eq("Sat, 26 Sep 2026 01:14:42 -0400")
+        expect(tr("25 Sep 2026 22:14 PDT")).to eq("26 Sep 2026 01:14 EDT")
+        expect(tr("Date: Sat, 5 Sep 2026 12:00:00 GMT", to: "UTC")).to eq("Date: Sat, 5 Sep 2026 12:00:00 UTC")
+      end
+
+      it "reports one dated match" do
+        expect(Tztr.matches("Fri Sep 25 22:14:42 PDT 2026", detect: true))
+          .to eq([{ original: "Fri Sep 25 22:14:42 PDT 2026", detected_format: "datetime", detected_tz: "PDT" }])
+      end
+
+      it "leaves a date that never happened alone" do
+        expect(tr("Mon Feb 30 12:00:00 UTC 2026")).to eq("Mon Feb 30 12:00:00 UTC 2026")
+      end
+    end
+
     describe "hour-only times" do
       def tr(line) = Tztr.translate(line, to: "UTC", from: "America/Los_Angeles", date: "2026-04-03")
 
