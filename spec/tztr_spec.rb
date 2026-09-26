@@ -75,6 +75,22 @@ RSpec.describe Tztr do
       expect(result.map { |m| m[:detected_format] }).to eq(%w[time iso])
     end
 
+it "leaves a bare time alone beside a timestamp that carries a date or zone" do
+      # Most likely a duration: the zone belongs to the timestamp that names it.
+      expect(Tztr.translate("2026-04-03T12:00:00Z took 0:05", to: "America/Los_Angeles"))
+        .to eq("2026-04-03T05:00:00-07:00 took 0:05")
+      expect(Tztr.translate("15:30 UTC, retry in 0:30", to: "America/Los_Angeles", date: "2026-04-03"))
+        .to eq("08:30 PDT, retry in 0:30")
+      expect(Tztr.matches("2026-04-03T12:00:00Z took 0:05", detect: true).map { |m| m[:original] })
+        .to eq(["2026-04-03T12:00:00Z"])
+    end
+    
+    it "still converts bare times when nothing on the line is more specific" do
+      expect(Tztr.translate("from 15:30 to 16:45", to: "UTC", from: "America/Los_Angeles", date: "2026-04-03"))
+        .to eq("from 22:30 UTC to 23:45 UTC")
+      expect(Tztr.translate("3:45 PM and 16:00", to: "UTC")).to eq("15:45 UTC and 16:00 UTC")
+    end
+    
     it "does not also match a shorter format inside a longer one" do
       expect(Tztr.matches("2026-04-03 12:00:00 UTC", detect: true).map { |m| m[:original] })
         .to eq(["2026-04-03 12:00:00 UTC"])
@@ -603,12 +619,12 @@ RSpec.describe Tztr do
       expect(err).not_to include("assuming")
     end
 
-    it "discloses a bare time that shares its line with a dated one" do
+    it "discloses nothing for a bare time left alone beside a dated one" do
       _, err, = Open3.capture3(
-        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", stdin_data: "2026-04-03T12:00:00Z then 15:30\n"
+        { "TZ" => "America/Los_Angeles" }, TZTR, "-t", "nyc", "-v", stdin_data: "2026-04-03T12:00:00Z took 0:05\n"
       )
-      expect(err).to include("implicit, from $TZ")
-      expect(err).to include("no -d given")
+      expect(err).not_to include("implicit")
+      expect(err).not_to include("assuming")
     end
 
     it "says nothing about assumptions it did not make" do

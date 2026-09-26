@@ -63,6 +63,7 @@ module Tztr
   # order above, so a longer format wins over a shorter one inside it, and every
   # timestamp on the line converts whatever its format.
   TIMESTAMP = Regexp.union(PATTERNS)
+  BARE_TIME = /\A(?:#{PATTERNS.last})\z/
 
   TIMEZONE_ALIASES = {
     # UTC
@@ -175,7 +176,12 @@ module Tztr
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
-    scannable(line).gsub(TIMESTAMP) do |match|
+    line = scannable(line)
+    skip_bare = anchored?(line.scan(TIMESTAMP))
+
+    line.gsub(TIMESTAMP) do |match|
+      next match if skip_bare && match.match?(BARE_TIME)
+
       convert_match(match, from:, to:, format:, date:) || match
     end
   end
@@ -188,7 +194,7 @@ module Tztr
     to = resolve_tz(to)
     from = resolve_tz(from)
     ENV['TZ'] = to
-    scannable(line).scan(TIMESTAMP).map do |match|
+    timestamps(scannable(line)).map do |match|
       info = {
         # Patterns only ever match ASCII, whatever the rest of the line is.
         original: match.force_encoding(Encoding::UTF_8),
@@ -205,11 +211,22 @@ module Tztr
   # whether or not it names its own; without a zone as well, the source zone
   # comes from $TZ too.
   def assumptions(line)
-    dateless = scannable(line).scan(TIMESTAMP).select { |match| detect_format(match) == 'time' }
+    dateless = timestamps(scannable(line)).select { |match| detect_format(match) == 'time' }
     return [] if dateless.empty?
     return %i[date zone] if dateless.any? { |match| detect_zone(match).nil? }
 
     [:date]
+  end
+
+  # A bare time beside a timestamp that names its date or zone is most likely a
+  # duration ("took 0:05"): that zone belongs to the timestamp naming it.
+  def timestamps(line)
+    found = line.scan(TIMESTAMP)
+    anchored?(found) ? found.grep_v(BARE_TIME) : found
+  end
+
+  def anchored?(found)
+    found.any? { |match| detect_format(match) != 'time' || detect_zone(match) }
   end
 
   def convert_match(match, from:, to:, format:, date: nil)

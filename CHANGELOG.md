@@ -21,7 +21,7 @@ that relied on an unrecognized timezone quietly falling back to UTC.
 
 #### Fixed
 
-- Every timestamp on a line converts, whatever its format. Only the first format found used to convert, so in `{"ts":"2026-04-03T12:00:00Z","msg":"at 15:30 UTC"}` the `15:30 UTC` was left alone with no warning. One side effect: a bare `H:MM` beside an ISO timestamp, like a duration in `took 0:05`, now converts as a time, as it already did on a line of its own.
+- Every timestamp on a line converts, whatever its format. Only the first format found used to convert, so in `{"ts":"2026-04-03T12:00:00Z","msg":"at 15:30 UTC"}` the `15:30 UTC` was left alone with no warning. A bare time with no date, zone or AM/PM is left alone when another timestamp on its line names a date or zone. It is most likely a duration, as in `2026-04-03T12:00:00Z took 0:05`.
 - A file that can't be read no longer stops a multi-file run. It is reported, every other file is still processed, and the exit status is 1, as with `cat` and `sed -i`. With `-i` it used to leave the job half-done: files before the bad one rewritten, files after it untouched.
 - Zone abbreviations are matched against an explicit list instead of "any 2-4 uppercase letters". Log levels stay in the line (`15:30 INFO server started` keeps its `INFO`), and `JST`, `CET`, `AEST` and the rest now actually convert instead of being read as local time. Lowercase spellings (`15:30 pst`) are recognized too, except `est`, `cet`, `et`, `ist`, `ut` and `z`, which are ordinary words that can follow a time.
 - An ambiguous wall clock in a repeated fall-back hour resolves to the earlier (daylight) occurrence, matching `date(1)`, Temporal, RFC 5545 and ICU.

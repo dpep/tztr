@@ -76,7 +76,9 @@ echo '15:30 UTC' | tztr -t Mars/Phobos
 
 Input is plain text, so JSON and NDJSON work too. Every timestamp on a line
 converts, whatever its format, and everything around it, including quotes,
-passes through untouched.
+passes through untouched. One exception: a bare time like `0:05`, with no
+date, zone or AM/PM, is left alone when another timestamp on the same line
+names a date or zone, since it is most likely a duration (`...Z took 0:05`).
 
 Zone abbreviations inside text are recognized in uppercase (`PST`) or
 lowercase (`pst`), but not mixed case. Six are uppercase only, because

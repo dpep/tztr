@@ -233,14 +233,47 @@ pub fn translate_bytes(
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
 
+    let skip_bare = anchored(timestamp().find_iter(line).map(|m| ascii(m.as_bytes())));
+
     timestamp()
         .replace_all(line, |caps: &regex::bytes::Captures| {
             let m = ascii(&caps[0]);
+            if skip_bare && bare_time_re().is_match(m) {
+                return m.as_bytes().to_vec();
+            }
             convert_match(m, from_tz.as_ref(), &to_tz, format, date)
                 .unwrap_or_else(|| m.to_string())
                 .into_bytes()
         })
         .into_owned()
+}
+
+/// The timestamps on a line. A bare time beside one that names its date or zone
+/// is most likely a duration ("took 0:05"): that zone belongs to the timestamp
+/// naming it. Mirrors `Tztr.timestamps`.
+fn timestamps(line: &[u8]) -> Vec<&str> {
+    let found: Vec<&str> = timestamp()
+        .find_iter(line)
+        .map(|m| ascii(m.as_bytes()))
+        .collect();
+    if anchored(found.iter().copied()) {
+        found
+            .into_iter()
+            .filter(|s| !bare_time_re().is_match(s))
+            .collect()
+    } else {
+        found
+    }
+}
+
+/// Whether any of these timestamps names its own date or zone.
+fn anchored<'a>(mut found: impl Iterator<Item = &'a str>) -> bool {
+    found.any(|s| detect_format(s) != "time" || detect_zone(s).is_some())
+}
+
+fn bare_time_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?$").unwrap())
 }
 
 /// Per-match structured analysis of a line. With `detect`, translation is
@@ -268,10 +301,9 @@ pub fn matches_bytes(
 ) -> Vec<Match> {
     let to_tz = resolve_zone(to);
     let from_tz = from.map(resolve_zone);
-    timestamp()
-        .find_iter(line)
-        .map(|m| {
-            let original = ascii(m.as_bytes());
+    timestamps(line)
+        .into_iter()
+        .map(|original| {
             let translated = if detect {
                 None
             } else {
@@ -341,9 +373,8 @@ impl Assumptions {
 
 /// What converting `line` would have to assume. See [`Assumptions`].
 pub fn assumptions(line: &[u8]) -> Assumptions {
-    let dateless: Vec<&str> = timestamp()
-        .find_iter(line)
-        .map(|m| ascii(m.as_bytes()))
+    let dateless: Vec<&str> = timestamps(line)
+        .into_iter()
         .filter(|s| detect_format(s) == "time")
         .collect();
 
@@ -692,9 +723,48 @@ mod tests {
     }
 
     #[test]
-    fn assumptions_see_a_bare_time_beside_a_dated_one() {
-        let a = assumptions(b"2026-04-03T12:00:00Z then 15:30");
-        assert!(a.date && a.zone);
+    fn leaves_a_bare_time_alone_beside_a_timestamp_with_a_date_or_zone() {
+        // Most likely a duration: the zone belongs to the timestamp naming it.
+        assert_eq!(
+            tr("2026-04-03T12:00:00Z took 0:05", "America/Los_Angeles"),
+            "2026-04-03T05:00:00-07:00 took 0:05"
+        );
+        assert_eq!(
+            translate(
+                "15:30 UTC, retry in 0:30",
+                "America/Los_Angeles",
+                None,
+                None,
+                Some("2026-04-03")
+            ),
+            "08:30 PDT, retry in 0:30"
+        );
+        let m = matches(
+            "2026-04-03T12:00:00Z took 0:05",
+            "UTC",
+            None,
+            None,
+            true,
+            None,
+        );
+        assert_eq!(m.len(), 1);
+        let a = assumptions(b"2026-04-03T12:00:00Z took 0:05");
+        assert!(!a.date && !a.zone);
+    }
+
+    #[test]
+    fn still_converts_bare_times_when_nothing_on_the_line_is_more_specific() {
+        assert_eq!(
+            translate(
+                "from 15:30 to 16:45",
+                "UTC",
+                Some("America/Los_Angeles"),
+                None,
+                Some("2026-04-03")
+            ),
+            "from 22:30 UTC to 23:45 UTC"
+        );
+        assert_eq!(tr("3:45 PM and 16:00", "UTC"), "15:45 UTC and 16:00 UTC");
     }
 
     #[test]
