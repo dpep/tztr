@@ -323,6 +323,66 @@ it "leaves a bare time alone beside a timestamp that carries a date or zone" do
     end
   end
 
+  describe "log formats" do
+    def tr(line, to: "UTC", from: nil) = Tztr.translate(line, to:, from:)
+
+    it "converts an nginx/Apache access-log timestamp, date and all" do
+      line = '127.0.0.1 - - [15/Jan/2015:12:31:01 -0700] "GET / HTTP/1.1" 200 1'
+      expect(tr(line, to: "America/New_York")).to eq('127.0.0.1 - - [15/Jan/2015:14:31:01 -0500] "GET / HTTP/1.1" 200 1')
+      expect(tr("[07/Apr/2015:23:31:01 -0700]")).to eq("[08/Apr/2015:06:31:01 +0000]")
+    end
+
+    it "converts a slash-separated date (Go's log package, nginx error log)" do
+      expect(tr("2026/09/25 23:14:42 main.go:42: started", from: "Etc/GMT+7"))
+        .to eq("2026/09/26 06:14:42 UTC main.go:42: started")
+      expect(tr("2026/09/25 23:14:42 PDT")).to eq("2026/09/26 06:14:42 UTC")
+    end
+
+    it "converts ctime without a weekday (ls -lT) and with a numeric zone" do
+      expect(tr("staff 100 Sep 25 23:40:39 2026 file.txt", from: "Etc/GMT+7"))
+        .to eq("staff 100 Sep 26 06:40:39 UTC 2026 file.txt")
+      expect(tr("Fri Sep 25 23:40:39 -0700 2026")).to eq("Sat Sep 26 06:40:39 +0000 2026")
+      expect(tr("Fri Sep 25 22:14:42 +03 2026")).to eq("Fri Sep 25 19:14:42 +0000 2026")
+    end
+
+    it "converts glibc's locale forms of date(1)" do
+      expect(tr("Fri 25 Sep 2026 10:14:42 PM PDT", to: "America/New_York")).to eq("Sat 26 Sep 2026 01:14:42 AM EDT")
+      expect(tr("Fri 25 Sep 2026 22:14:42 PDT", to: "America/New_York")).to eq("Sat 26 Sep 2026 01:14:42 EDT")
+    end
+
+    it "leaves a date(1) line alone when its zone is one it can't resolve" do
+      expect(tr("Fri Sep 25 22:14:42 WIB 2026")).to eq("Fri Sep 25 22:14:42 WIB 2026")
+    end
+
+    it "keeps Python logging's comma milliseconds with the seconds" do
+      expect(tr("2026-09-25 22:14:42,123 INFO x", from: "UTC", to: "America/New_York"))
+        .to eq("2026-09-25 18:14:42,123 EDT INFO x")
+      expect(tr("[2026-04-03 12:00:00,123] ok", from: "UTC")).to eq("[2026-04-03 12:00:00,123 UTC] ok")
+    end
+
+    it "keeps every fractional digit it was given" do
+      expect(tr("2026-09-25T22:14:42.123456789Z")).to eq("2026-09-25T22:14:42.123456789Z")
+      expect(tr("2026-09-25T22:14:42.123456789Z", to: "America/New_York")).to eq("2026-09-25T18:14:42.123456789-04:00")
+      expect(tr("2026-09-25 22:14:42.5 UTC")).to eq("2026-09-25 22:14:42.5 UTC")
+      expect(Tztr.translate("12:34:56.25 UTC", to: "UTC", date: "2026-04-03")).to eq("12:34:56.25 UTC")
+    end
+  end
+
+  describe "durations" do
+    it "leaves a time followed by a unit of duration alone" do
+      expect(Tztr.translate("Finished in 1:05 minutes (files took 2.3 seconds to load)", to: "UTC"))
+        .to eq("Finished in 1:05 minutes (files took 2.3 seconds to load)")
+      expect(Tztr.translate("took 2:30 hrs", to: "UTC")).to eq("took 2:30 hrs")
+      expect(Tztr.translate("ETA 1:30 min", to: "UTC")).to eq("ETA 1:30 min")
+      expect(Tztr.translate("at 3:05 PM, took 0:30 sec", to: "UTC")).to eq("at 15:05 UTC, took 0:30 sec")
+    end
+
+    it "still converts a time followed by an ordinary word" do
+      expect(Tztr.translate("15:30 meeting", to: "UTC", date: "2026-04-03")).to eq("15:30 UTC meeting")
+      expect(Tztr.translate("10:30 h", to: "UTC", date: "2026-04-03")).to eq("10:30 UTC h")
+    end
+  end
+
   describe "dated timestamps without seconds" do
     it "keeps the written date instead of assuming today" do
       expect(Tztr.translate("2026-01-15 23:30", from: "UTC", to: "America/Los_Angeles"))
