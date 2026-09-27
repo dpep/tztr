@@ -69,8 +69,17 @@ CASES = []
 
 # compare: false skips the byte-for-byte stdout diff, for output that depends
 # on the clock (`tztr now`); expect: then carries the whole check.
-def add(group:, args: [], stdin: "", tz: "UTC", files: nil, dirs: nil, expect: nil, compare: true)
-  CASES << { group: group, args: args, stdin: stdin, tz: tz, files: files, dirs: dirs, expect: expect, compare: compare }
+def add(group:, args: [], stdin: "", tz: "UTC", files: nil, dirs: nil, expect: nil, compare: true, lines: nil)
+  CASES << { group: group, args: args, stdin: stdin, tz: tz, files: files, dirs: dirs, expect: expect,
+             compare: compare, lines: lines }
+end
+
+# Many lines through one process. Lines convert independently, so a batch
+# compares exactly what one run per line would -- at a hundredth of the
+# process start-ups, which are nearly all of the runtime. A batch that
+# mismatches is re-run line by line to name the culprits.
+def add_batch(group:, args:, tz:, lines:)
+  add(group: group, args: args, tz: tz, stdin: lines.map { |line| "#{line}\n" }.join, lines: lines)
 end
 
 # ==============================================================================
@@ -333,10 +342,12 @@ CORE_ARGS = [
 ].freeze
 
 CORE_ENVS.each do |tz|
-  CORE_ARGS.each do |args|
-    CORE_LINES.each { |line| add(group: "core", args: args, stdin: "#{line}\n", tz: tz) }
-  end
+  CORE_ARGS.each { |args| add_batch(group: "core", args: args, tz: tz, lines: CORE_LINES) }
 end
+
+# -v speaks once per run, so a batch only hears each note's first occasion.
+# One line per process, for one -v setup that makes every kind of note.
+CORE_LINES.each { |line| add(group: "core", args: ["-v", "-t", "utc"], stdin: "#{line}\n", tz: "America/New_York") }
 
 # ==============================================================================
 # GROUP: payloads -- stdin shapes rather than line contents
@@ -409,9 +420,7 @@ ENV_LINES = [
 ].freeze
 
 ENV_VALUES.each do |tz|
-  ENV_ARGS.each do |args|
-    ENV_LINES.each { |line| add(group: "env", args: args, stdin: "#{line}\n", tz: tz) }
-  end
+  ENV_ARGS.each { |args| add_batch(group: "env", args: args, tz: tz, lines: ENV_LINES) }
 end
 
 # ==============================================================================
@@ -895,7 +904,16 @@ def check(kase, index, scratch)
     end
   end
 
-  problems.empty? ? nil : { kase: kase, problems: problems, rb: rb, rs: rs }
+  return if problems.empty?
+
+  failure = { kase: kase, problems: problems, rb: rb, rs: rs }
+  if kase[:lines]
+    failure[:culprits] = kase[:lines].filter_map do |line|
+      one = kase.merge(stdin: "#{line}\n", lines: nil)
+      check(one, index, scratch)
+    end
+  end
+  failure
 end
 
 def describe(kase)
@@ -908,6 +926,10 @@ def describe(kase)
 end
 
 def report(failure)
+  # A batch reports the lines that mismatch on their own; if none do, the
+  # difference is in how lines combine (a -v note, a -j array), so show it all.
+  return failure[:culprits].each { |culprit| report(culprit) } if failure[:culprits]&.any?
+
   kase = failure[:kase]
   puts "MISMATCH [#{kase[:group]}] #{failure[:problems].join(', ')}"
   puts "  #{describe(kase)}"
