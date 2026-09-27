@@ -290,9 +290,26 @@ fn verbose_suppresses_the_startup_line_when_the_source_zone_is_implicit() {
         "{}",
         o.stderr
     );
-    // No -f and no $TZ keeps it too.
+    // No -f and no $TZ: the system zone, disclosed as such; with none to be
+    // found, the plain startup line.
     let o = run_tz(b"15:30\n", &["-v"], None);
-    assert!(o.stderr.contains("tztr: from=auto to=UTC"), "{}", o.stderr);
+    let expected = match tztr::system_zone() {
+        Some(zone) => format!("tztr: from={zone} (implicit, from the system zone) to=UTC"),
+        None => "tztr: from=auto to=UTC".to_string(),
+    };
+    assert!(o.stderr.contains(&expected), "{}", o.stderr);
+}
+
+#[test]
+fn a_timestamp_with_no_zone_is_read_in_the_system_zone_when_tz_is_unset() {
+    let Some(zone) = tztr::system_zone() else {
+        return;
+    };
+    let o = run_tz(b"2026-01-15 12:00:00\n", &["-t", "UTC"], None);
+    assert_eq!(
+        o.out().trim_end(),
+        tztr::translate("2026-01-15 12:00:00", "UTC", Some(&zone), None, None)
+    );
 }
 
 #[test]

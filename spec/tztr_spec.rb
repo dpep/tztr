@@ -1060,6 +1060,16 @@ end
       end
     end
 
+it "reads a timestamp with no zone in the system zone when -f and TZ are unset" do
+  zone = Tztr.system_zone
+  skip "no system zone on this machine" unless zone
+
+  expect(run("2026-01-15 12:00:00", "-t", "UTC"))
+    .to eq(Tztr.translate("2026-01-15 12:00:00", to: "UTC", from: zone))
+  _, err, = Open3.capture3({ "TZ" => nil }, TZTR, "-v", "-t", "utc", stdin_data: "2026-01-15 12:00:00\n")
+  expect(err).to include("tztr: from=#{zone} (implicit, from the system zone) to=UTC")
+end
+
     it "reads $TZ's own abbreviations in its own sense" do
       expect(run("Fri Sep 25 22:14:42 CST 2026", "-t", "utc", env: { "TZ" => "Asia/Shanghai" }))
         .to eq("Fri Sep 25 14:14:42 UTC 2026")

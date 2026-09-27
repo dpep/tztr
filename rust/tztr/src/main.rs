@@ -10,8 +10,8 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::ExitCode;
 
 use tztr::{
-    assumed_date, assumptions, ignored_zones, matches_bytes, resolve_tz, timezone_aliases,
-    translate_bytes, unknown_zones, Assumptions, Format, Match,
+    assumed_date, assumptions, ignored_zones, matches_bytes, resolve_tz, system_zone,
+    timezone_aliases, translate_bytes, unknown_zones, Assumptions, Format, Match,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -21,7 +21,7 @@ Usage: tztr [options] [file | now]
 
 Timezone Translator - convert timestamps between timezones. Reads from stdin, files, or the clock (now).
 
-    -f, --from TZ                    Input timezone for timestamps that name none (default: $TZ, else -t)
+    -f, --from TZ                    Input timezone for timestamps that name none (default: $TZ, else the system zone)
     -t, --to TZ                      Output timezone (default: $TZ, else UTC)
     -l, --list                       List timezone aliases
     -i, --in-place                   Edit files in place
@@ -52,6 +52,8 @@ struct Options {
     from: Option<String>,
     /// `from` was defaulted from `$TZ` rather than chosen with `-f`.
     from_is_implicit: bool,
+    /// Where an implicit source zone came from, for -v: `$TZ` or the system.
+    implicit_source: &'static str,
     to: String,
     format: Option<Format>,
     date: Option<String>,
@@ -226,10 +228,23 @@ fn run() -> Result<ExitCode, String> {
 
     let zone = |input: &str| resolve_tz(input).map_err(|e| e.to_string());
     let to = zone(to_arg.as_deref().or(local_tz.as_deref()).unwrap_or("UTC"))?;
-    let from_is_implicit = from.is_none() && local_tz.is_some();
+    // A timestamp with no zone is read in -f, else $TZ, else the machine's own
+    // zone; only when none of those is known is it taken to be in -t already.
+    let system_tz = if local_tz.is_none() {
+        system_zone()
+    } else {
+        None
+    };
+    let implicit_source = match (&from, &local_tz, &system_tz) {
+        (Some(_), _, _) => None,
+        (None, Some(_), _) => Some("$TZ"),
+        (None, None, Some(_)) => Some("the system zone"),
+        (None, None, None) => None,
+    };
+    let from_is_implicit = implicit_source.is_some();
     let from = match from.as_deref().or(local_tz.as_deref()) {
         Some(f) => Some(zone(f)?),
-        None => None,
+        None => system_tz,
     };
 
     let date = match date {
@@ -240,6 +255,7 @@ fn run() -> Result<ExitCode, String> {
     let mut opts = Options {
         from,
         from_is_implicit,
+        implicit_source: implicit_source.unwrap_or("$TZ"),
         to,
         format,
         date,
@@ -445,7 +461,10 @@ fn disclose(opts: &Options, line: &[u8], disclosed: &mut Disclosed) {
 
     if new.zone {
         if let Some(from) = opts.from.as_deref().filter(|_| opts.from_is_implicit) {
-            eprintln!("tztr: from={from} (implicit, from $TZ) to={}", opts.to);
+            eprintln!(
+                "tztr: from={from} (implicit, from {}) to={}",
+                opts.implicit_source, opts.to
+            );
         }
     }
     if new.date && opts.date.is_none() {
@@ -581,7 +600,7 @@ fn help_doc() -> Value {
         "usage": "tztr [options] [file | now]",
         "summary": "Timezone Translator - convert timestamps between timezones. Reads from stdin, files, or the clock (now).",
         "options": [
-            {"short": "-f", "long": "--from", "arg": "TZ", "description": "Input timezone for timestamps that name none (default: $TZ, else -t)"},
+            {"short": "-f", "long": "--from", "arg": "TZ", "description": "Input timezone for timestamps that name none (default: $TZ, else the system zone)"},
             {"short": "-t", "long": "--to", "arg": "TZ", "description": "Output timezone (default: $TZ, else UTC)"},
             {"short": "-l", "long": "--list", "arg": null, "description": "List timezone aliases"},
             {"short": "-i", "long": "--in-place", "arg": null, "description": "Edit files in place"},

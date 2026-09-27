@@ -17,7 +17,7 @@ HELP_DOC = {
   usage: 'tztr [options] [file | now]',
   summary: 'Timezone Translator - convert timestamps between timezones. Reads from stdin, files, or the clock (now).',
   options: [
-    { short: '-f', long: '--from', arg: 'TZ', description: 'Input timezone for timestamps that name none (default: $TZ, else -t)' },
+    { short: '-f', long: '--from', arg: 'TZ', description: 'Input timezone for timestamps that name none (default: $TZ, else the system zone)' },
     { short: '-t', long: '--to', arg: 'TZ', description: 'Output timezone (default: $TZ, else UTC)' },
     { short: '-l', long: '--list', arg: nil, description: 'List timezone aliases' },
     { short: '-i', long: '--in-place', arg: nil, description: 'Edit files in place' },
@@ -73,7 +73,7 @@ parser = OptionParser.new do |opts|
   opts.separator "Timezone Translator - convert timestamps between timezones. Reads from stdin, files, or the clock (now)."
   opts.separator ""
 
-  opts.on("-f", "--from TZ", "Input timezone for timestamps that name none (default: $TZ, else -t)") { |v| options[:from] = v }
+  opts.on("-f", "--from TZ", "Input timezone for timestamps that name none (default: $TZ, else the system zone)") { |v| options[:from] = v }
   opts.on("-t", "--to TZ", "Output timezone (default: $TZ, else UTC)") { |v| options[:to] = v }
   opts.on("-l", "--list", "List timezone aliases") { Tztr::TIMEZONE_ALIASES.sort.each { |k, v| puts "%-12s %s" % [k, v] }; exit }
   opts.on("-i", "--in-place", "Edit files in place") { options[:inplace] = true }
@@ -129,11 +129,19 @@ if options[:help]
   exit
 end
 
-implicit_from = options[:from].nil? && !local_tz.nil?
+# A timestamp with no zone is read in -f, else $TZ, else the machine's own
+# zone; only when none of those is known is it taken to be in -t already.
+system_tz = Tztr.system_zone unless local_tz
+implicit_source =
+  if options[:from] then nil
+  elsif local_tz then '$TZ'
+  elsif system_tz then 'the system zone'
+  end
+implicit_from = !implicit_source.nil?
 
 begin
   options[:to] = Tztr.resolve_tz(options[:to])
-  options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz)
+  options[:from] = Tztr.resolve_tz(options[:from]) || Tztr.resolve_tz(local_tz) || system_tz
   options[:date] = Tztr.normalize_date(options[:date]) if options[:date]
 rescue Tztr::Error => e
   abort "#{parser.program_name}: #{e.message}"
@@ -171,7 +179,7 @@ disclose = lambda do |line|
   return if assumed.empty?
 
   disclosed.concat(assumed)
-  warn "#{parser.program_name}: from=#{options[:from]} (implicit, from $TZ) to=#{options[:to]}" if assumed.include?(:zone) && implicit_from
+  warn "#{parser.program_name}: from=#{options[:from]} (implicit, from #{implicit_source}) to=#{options[:to]}" if assumed.include?(:zone) && implicit_from
   return unless assumed.include?(:date) && !options[:date]
 
   warn "#{parser.program_name}: no -d given, assuming #{Tztr.assumed_date(line, from: options[:from], to: options[:to])} for DST resolution"

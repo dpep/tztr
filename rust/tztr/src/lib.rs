@@ -202,6 +202,23 @@ impl std::fmt::Display for TzError {
 
 impl std::error::Error for TzError {}
 
+/// The zone the machine runs in, when `$TZ` doesn't say: `/etc/localtime`'s
+/// link into the tzdb (macOS, most Linux), else Debian's `/etc/timezone`.
+/// Mirrors `Tztr.system_zone`.
+pub fn system_zone() -> Option<String> {
+    let linked = std::fs::read_link("/etc/localtime").ok().and_then(|path| {
+        path.to_str()
+            .and_then(|p| p.split_once("zoneinfo/"))
+            .map(|(_, name)| name.to_string())
+    });
+    let name = linked.or_else(|| {
+        std::fs::read_to_string("/etc/timezone")
+            .ok()
+            .map(|s| s.trim().to_string())
+    })?;
+    TimeZone::get(&name).is_ok().then_some(name)
+}
+
 /// Resolve a user-supplied zone (alias, numeric offset, or IANA name) to an
 /// IANA-style name the system tz database can load. Mirrors `Tztr.resolve_tz`.
 ///

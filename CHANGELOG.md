@@ -1,5 +1,9 @@
 ### Unreleased
 
+#### Breaking
+
+- A timestamp with no zone, with no `-f` and `$TZ` unset (the macOS default), is read in the system zone (`/etc/localtime`) and converted. It used to be taken to be in the output zone already and only relabelled: `12:00 | tztr -t utc` printed `12:00 UTC` on a Mac set to Pacific time; it now prints `19:00 UTC`. Set `-f` to choose another source zone.
+
 #### Fixed
 
 - The Ruby gem is about 4x faster than 0.2.0 on a mixed log, and on par with or faster than 0.1.0: lines without a timestamp are skipped before the scan, zone lookups are cached, and a time without a zone no longer switches `$TZ` and back to convert.

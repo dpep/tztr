@@ -255,6 +255,22 @@ module Tztr
     input
   end
 
+  # The zone the machine runs in, when $TZ doesn't say: /etc/localtime's link
+  # into the tzdb (macOS, most Linux), else Debian's /etc/timezone.
+  def system_zone
+    name = begin
+      File.readlink('/etc/localtime').split('zoneinfo/', 2)[1]
+    rescue SystemCallError
+      nil
+    end
+    name ||= begin
+      File.read('/etc/timezone').strip
+    rescue SystemCallError
+      nil
+    end
+    name if name && known_zone?(name)
+  end
+
   def known_zone?(name)
     return false unless name.match?(%r{\A[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*\z})
 

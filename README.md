@@ -48,7 +48,7 @@ exit status is 1, as with `cat` and `sed -i`.
 ### Options
 
 ```
--f, --from TZ       Input timezone for timestamps that name none (default: $TZ, else -t)
+-f, --from TZ       Input timezone for timestamps that name none (default: $TZ, else the system zone)
 -t, --to TZ         Output timezone (default: $TZ, else UTC)
 -l, --list          List timezone aliases
 -i, --in-place      Edit files in place
@@ -91,13 +91,16 @@ echo '2026-04-03T12:00:00Z' | tztr
 ```
 
 A timestamp that names its own zone is read in that zone, whatever `-f` says.
-One that doesn't is read in `-f`, else `$TZ`. With neither set, it's taken to
-be in the output zone already, so it's labelled rather than converted:
+One that doesn't is read in `-f`, else `$TZ`, else the machine's own zone (the
+one `/etc/localtime` points to, as on macOS, where `TZ` is usually unset):
 
 ```bash
-echo '12:00' | env -u TZ tztr -t pst -d 2026-04-03
-# 12:00 PDT
+echo '12:00' | env -u TZ tztr -t utc -d 2026-04-03
+# 19:00 UTC   (on a Mac set to Pacific time)
 ```
+
+Only if no system zone can be found either is it taken to be in the output
+zone already, and labelled rather than converted.
 
 A zone that can't be resolved is an error: exit 1, nothing on stdout.
 
@@ -267,8 +270,8 @@ tztr -h -j
 `-v` explains itself on stderr, leaving stdout untouched. Each note is printed
 once, the first time it applies:
 
-- the source and output zones, when `-f` is given or `$TZ` is unset
-- the source zone it borrowed from `$TZ`, when a timestamp needed one
+- the source and output zones, when `-f` is given
+- the source zone it borrowed from `$TZ` or the system, when a timestamp needed one
 - the date it assumed for DST, when a timestamp had none and there's no `-d`
 - a zone it passed over for its case (`Pst`), or didn't know (`EEST`)
 
