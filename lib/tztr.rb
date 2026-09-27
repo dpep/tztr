@@ -122,8 +122,10 @@ module Tztr
 
   # One pass over the line: at each position the alternatives are tried in the
   # order above, so a longer format wins over a shorter one inside it, and every
-  # timestamp on the line converts whatever its format.
-  TIMESTAMP = Regexp.union(PATTERNS)
+  # timestamp on the line converts whatever its format. Every format starts
+  # with a digit or a capital; saying so up front lets Onigmo skip other
+  # positions instead of trying each alternative there (2-3x faster scans).
+  TIMESTAMP = /(?=[0-9A-Z])(?:#{Regexp.union(PATTERNS).source})/
   BARE_TIME = /\A(?:#{PATTERNS.last})\z/
 
   # A time-only timestamp in pieces, for sharing a range's zone and meridiem.
@@ -225,9 +227,16 @@ module Tztr
     index && index + 1
   end
 
+  # Cached: resolving an IANA name reads its zoneinfo file, once per line
+  # otherwise. Failures raise every time.
   def resolve_tz(input)
     return if input.nil?
 
+    @resolved_tz ||= {}
+    @resolved_tz.fetch(input) { @resolved_tz[input] = resolve_tz!(input) }
+  end
+
+  def resolve_tz!(input)
     input = input.delete_prefix(':') # POSIX spells it TZ=:America/New_York
 
     # Numeric offset: -7 -> Etc/GMT+7 (POSIX sign is inverted)
@@ -259,7 +268,7 @@ module Tztr
   def translate(line, to: 'UTC', from: nil, format: nil, date: nil)
     to = resolve_tz(to)
     from = resolve_tz(from)
-    ENV['TZ'] = to
+    use_zone(to)
     out = line.byteslice(0, 0)
     pos = 0
 
@@ -278,7 +287,7 @@ module Tztr
   def matches(line, to: 'UTC', from: nil, format: nil, detect: false, date: nil)
     to = resolve_tz(to)
     from = resolve_tz(from)
-    ENV['TZ'] = to
+    use_zone(to)
     timestamps(scannable(line)).map do |stamp|
       info = {
         # Patterns only ever match ASCII, whatever the rest of the line is.
@@ -385,10 +394,20 @@ module Tztr
   # minutes". Only units spelled out enough not to be a word of their own.
   DURATION_UNIT = /\A[ \t]+(?:secs?|seconds?|mins?|minutes?|hrs?|hours?)\b/i
 
+  # Every format has a digit followed by a colon and digit, or by a meridiem.
+  MAYBE_TIME = /\d(?::\d|[   ]?[AaPp])/
+
   def scan_stamps(line)
     stamps = []
+    return stamps unless line.match?(MAYBE_TIME)
+
     line.scan(TIMESTAMP) do
-      offset, text, before, after = $~.byteoffset(0)[0], $~[0], $~.pre_match[-1], $~.post_match
+      offset, finish = $~.byteoffset(0)
+      text = $~[0]
+      # Neighbouring bytes only: pre_match/post_match would copy the rest of
+      # the line for every match.
+      before = offset.positive? ? line.byteslice(offset - 1, 1) : nil
+      after = line.byteslice(finish, 12)
       next if text.match?(BARE_TIME) && after.match?(DURATION_UNIT)
       # A clock inside a longer run of colons: IPv6 (fe80::1:23:45), SMPTE
       # timecodes (01:02:03:04).
@@ -499,10 +518,21 @@ module Tztr
     offset = zone_offset(abbr, from)
     return Time.now.getlocal(offset).to_date if offset
 
-    ENV['TZ'] = aliased_zone(abbr, from) || from || to
-    today = Time.now.to_date
-    ENV['TZ'] = to
-    today
+    zone = aliased_zone(abbr, from) || from || to
+    # Cached for the minute: finding it switches zones, and back.
+    @today ||= {}
+    @today[[zone, Time.now.to_i / 60]] ||= begin
+      use_zone(zone)
+      today = Time.now.to_date
+      use_zone(to)
+      today
+    end
+  end
+
+  # Set $TZ only when it changes: every assignment, even of the same name,
+  # makes the next local-time call reload the zone.
+  def use_zone(zone)
+    ENV['TZ'] = zone unless ENV['TZ'] == zone
   end
 
   # The abbreviations the source zone itself uses this year, with the offset
@@ -559,8 +589,10 @@ module Tztr
 
   # The zone a reading ends with. It must start the text or follow a space or
   # digit: EEST is not EST with an E in front.
+  ZONE_AT_END = /(?:\A|[ \d])(#{ABBREVIATION}|[+-]\d{2}(?::?\d{2})?)\z/
+
   def detect_zone(str)
-    m = str.match(/(?:\A|[ \d])(#{ABBREVIATION}|[+-]\d{2}(?::?\d{2})?)\z/)
+    m = str.match(ZONE_AT_END)
     m && m[1]
   end
 
@@ -584,7 +616,9 @@ module Tztr
 
     # A zone we can't resolve (a date(1) line's WIB): leave the text alone
     # rather than read it as local time.
-    raise ArgumentError, "unknown zone: #{unknown_zone(str)}" if unknown_zone(str) && !zone_token(str, from)
+    unknown = unknown_zone(str)
+    abbr = zone_token(str, from)
+    raise ArgumentError, "unknown zone: #{unknown}" if unknown && !abbr
 
     # Time.parse accepts 99:14, and 22:14 AM, in some shapes; the Rust port
     # never does.
@@ -596,7 +630,6 @@ module Tztr
 
     # A fixed abbreviation becomes the offset it names, in whatever case it was
     # written, so Time.parse's own zone table never decides.
-    abbr = zone_token(str, from)
     if abbr&.match?(/\A[A-Za-z]+\z/) && (offset = zone_offset(abbr.upcase, from))
       str = str.delete_suffix(abbr) + offset
       abbr = offset
@@ -612,7 +645,7 @@ module Tztr
     elsif from
       in_zone(str, from, to)
     else
-      ENV['TZ'] = to
+      use_zone(to)
       earliest_occurrence(Time.parse(str))
     end
   end
@@ -624,11 +657,40 @@ module Tztr
     TIMEZONE_ALIASES[abbr.downcase]
   end
 
+  # A wall clock in `zone`, as a time in `to`. Read as if UTC, then shifted by
+  # the zone's offset at that moment: switching $TZ to zone and back instead
+  # costs ~400us a timestamp, most of a run.
   def in_zone(str, zone, to)
-    ENV['TZ'] = zone
-    utc = earliest_occurrence(Time.parse(str)).utc
-    ENV['TZ'] = to
-    utc.localtime
+    wall = Time.parse("#{str} UTC")
+    use_zone(to)
+    wall_to_utc(wall, zone).localtime
+  end
+
+  # The instant a wall clock in `zone` names. Across a fall-back overlap, the
+  # earlier one (earliest_occurrence's rule); in a spring-forward gap, the
+  # offset from before it, which moves the clock forward as Time.local does.
+  def wall_to_utc(wall, zone)
+    before = offset_at(zone, wall - 86_400)
+    after = offset_at(zone, wall + 86_400)
+    return wall - before if before == after
+
+    fits = [before, after].select { |offset| offset_at(zone, wall - offset) == offset }
+    wall - (fits.max || before)
+  end
+
+  # A zone's UTC offset at an instant, cached per 15-minute bucket: every tzdb
+  # transition falls on a quarter hour, so a bucket has one offset, and a log's
+  # timestamps cluster into few buckets.
+  def offset_at(zone, time)
+    bucket = time.to_i / 900
+    @offsets ||= {}
+    @offsets[[zone, bucket]] ||= begin
+      previous = ENV['TZ']
+      use_zone(zone)
+      offset = Time.at(bucket * 900).utc_offset
+      use_zone(previous)
+      offset
+    end
   end
 
   # A wall clock repeated by a DST fall-back resolves to the earlier

@@ -1,3 +1,9 @@
+### Unreleased
+
+#### Fixed
+
+- The Ruby gem is about 4x faster than 0.2.0 on a mixed log, and on par with or faster than 0.1.0: lines without a timestamp are skipped before the scan, zone lookups are cached, and a time without a zone no longer switches `$TZ` and back to convert.
+
 ###  0.2.0  (2026-09-26)
 
 0.1.0 reached users twice: the gem in April, then the Rust crate and Homebrew
