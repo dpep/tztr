@@ -184,7 +184,10 @@ fn lists_aliases() {
 
 #[test]
 fn emits_json_array() {
-    let out = stdout("from 15:30 UTC to 16:45 UTC", &["-t", "pst", "-j"]);
+    let out = stdout(
+        "from 15:30 UTC to 16:45 UTC",
+        &["-t", "pst", "-d", "2026-04-03", "-j"],
+    );
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v[0]["translated"], "08:30 PDT");
     assert_eq!(v[1]["translated"], "09:45 PDT");

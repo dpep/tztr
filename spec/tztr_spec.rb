@@ -40,12 +40,12 @@ RSpec.describe Tztr do
     end
 
     it "converts time with tz" do
-      expect(Tztr.translate("15:30 UTC", to: "America/Los_Angeles"))
+      expect(Tztr.translate("15:30 UTC", to: "America/Los_Angeles", date: "2026-04-03"))
         .to eq("08:30 PDT")
     end
 
     it "converts time with seconds" do
-      expect(Tztr.translate("15:30:45 UTC", to: "America/Los_Angeles"))
+      expect(Tztr.translate("15:30:45 UTC", to: "America/Los_Angeles", date: "2026-04-03"))
         .to eq("08:30:45 PDT")
     end
 
@@ -60,7 +60,7 @@ RSpec.describe Tztr do
     end
 
     it "replaces multiple timestamps on same line" do
-      result = Tztr.translate("from 15:30 UTC to 16:45 UTC", to: "America/Los_Angeles")
+      result = Tztr.translate("from 15:30 UTC to 16:45 UTC", to: "America/Los_Angeles", date: "2026-04-03")
       expect(result).to eq("from 08:30 PDT to 09:45 PDT")
     end
 
@@ -612,7 +612,7 @@ end
     end
 
     it "returns one entry per timestamp on a line" do
-      result = Tztr.matches("from 15:30 UTC to 16:45 UTC", to: "America/Los_Angeles")
+      result = Tztr.matches("from 15:30 UTC to 16:45 UTC", to: "America/Los_Angeles", date: "2026-04-03")
       expect(result.map { |m| m[:translated] }).to eq(["08:30 PDT", "09:45 PDT"])
     end
 
@@ -776,7 +776,7 @@ end
     end
 
     it "converts bare time with from timezone" do
-      expect(Tztr.translate("12:27:40", from: "sf", to: "UTC"))
+      expect(Tztr.translate("12:27:40", from: "sf", to: "UTC", date: "2026-04-03"))
         .to eq("19:27:40 UTC")
     end
   end
@@ -875,12 +875,12 @@ end
     end
 
     it "uses TZ as implicit from for bare timestamps" do
-      expect(run("12:27:40", "-t", "utc", env: { "TZ" => "America/Los_Angeles" }))
+      expect(run("12:27:40", "-t", "utc", "-d", "2026-04-03", env: { "TZ" => "America/Los_Angeles" }))
         .to eq("19:27:40 UTC")
     end
 
     it "leaves bare timestamp alone when TZ matches target" do
-      expect(run("12:27:40", env: { "TZ" => "America/Los_Angeles" }))
+      expect(run("12:27:40", "-d", "2026-04-03", env: { "TZ" => "America/Los_Angeles" }))
         .to eq("12:27:40 PDT")
     end
 
@@ -913,7 +913,7 @@ end
     end
 
     it "emits a JSON array with -j" do
-      out = run("from 15:30 UTC to 16:45 UTC", "-t", "pst", "-j")
+      out = run("from 15:30 UTC to 16:45 UTC", "-t", "pst", "-d", "2026-04-03", "-j")
       group = { "type" => "range", "members" => ["15:30 UTC", "16:45 UTC"] }
       expect(JSON.parse(out)).to eq([
         { "original" => "15:30 UTC", "detected_format" => "time", "detected_tz" => "UTC", "translated" => "08:30 PDT", "group" => group },
