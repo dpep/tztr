@@ -2202,7 +2202,8 @@ mod tests {
 
     #[test]
     fn converts_time_with_tz() {
-        assert_eq!(tr("15:30 UTC", "America/Los_Angeles"), "08:30 PDT");
+        let tr = |l| translate(l, "America/Los_Angeles", None, None, Some("2026-04-03"));
+        assert_eq!(tr("15:30 UTC"), "08:30 PDT");
     }
 
     #[test]
@@ -2219,7 +2220,13 @@ mod tests {
     #[test]
     fn replaces_multiple_timestamps_on_same_line() {
         assert_eq!(
-            tr("from 15:30 UTC to 16:45 UTC", "America/Los_Angeles"),
+            translate(
+                "from 15:30 UTC to 16:45 UTC",
+                "America/Los_Angeles",
+                None,
+                None,
+                Some("2026-04-03")
+            ),
             "from 08:30 PDT to 09:45 PDT"
         );
     }
