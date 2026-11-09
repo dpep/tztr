@@ -22,5 +22,5 @@ Gem::Specification.new do |s|
   s.add_development_dependency 'ice_age', '>= 0.2'
   s.add_development_dependency 'rspec', '>= 3.10'
   s.add_development_dependency 'rspec-debugging'
-  s.add_development_dependency 'simplecov', '>= 0.22'
+  s.add_development_dependency 'simplecov', '>= 1'
 end
