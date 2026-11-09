@@ -5,7 +5,7 @@
 # files) through both binaries and diffs stdout, stderr, exit code, and any
 # files the run touched -- all byte-for-byte. Exits non-zero on any mismatch.
 #
-#   make parity                      # preferred: picks a Ruby >= 3.2 for you
+#   make parity                      # preferred: picks a Ruby >= 3.3 for you
 #   ruby script/parity.rb            # uses rust/target/release/tztr
 #   RUST_BIN=path ruby script/parity.rb
 #   PARITY_JOBS=1 ruby script/parity.rb        # serial, for debugging
@@ -34,7 +34,7 @@ require "tmpdir"
 # bin/tztr's `#!/usr/bin/env ruby` and a bare `ruby` both resolve to macOS
 # system Ruby 2.6 when rbenv's shims aren't on PATH. That produces a wall of
 # "failures" that have nothing to do with parity, so refuse to run at all.
-MIN_RUBY = "3.2"
+MIN_RUBY = "3.3"
 if Gem::Version.new(RUBY_VERSION) < Gem::Version.new(MIN_RUBY)
   abort <<~MSG
     script/parity.rb: needs Ruby >= #{MIN_RUBY}, got #{RUBY_VERSION}
