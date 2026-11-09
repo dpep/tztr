@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Library entry point: `lib/tztr.rb` (single file, `Tztr` module)
 - Executable: `bin/tztr` (uses OptionParser, streams stdin/files line-by-line)
-- Required Ruby: `>= 3.2`. CI runs against 3.3, 3.4, and 4.0.
+- Required Ruby: `>= 3.3`. CI runs against 3.3, 3.4, and 4.0.
 
 ## Dual implementation — Ruby (reference) + Rust (port)
 

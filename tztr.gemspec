@@ -13,7 +13,7 @@ Gem::Specification.new do |s|
   s.summary     = "Timezone Translator"
   s.version     = Tztr::VERSION
 
-  s.required_ruby_version = ">= 3.2"
+  s.required_ruby_version = ">= 3.3"
 
   # require_exact crashes on `--` and misreports `--flag=value` before 0.5 (Ruby 3.3 bundles 0.4).
   s.add_dependency 'optparse', '>= 0.5'

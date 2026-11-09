@@ -52,12 +52,12 @@ fmt:
 # satisfies the gemspec instead; override with `make parity RUBY=/path/to/ruby`.
 RUBY_CANDIDATES := ruby $(shell rbenv root 2>/dev/null)/versions/*/bin/ruby /opt/homebrew/opt/ruby/bin/ruby
 RUBY ?= $(shell for r in $(RUBY_CANDIDATES); do \
-	  "$$r" -e 'exit Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("3.2")' 2>/dev/null \
+	  "$$r" -e 'exit Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("3.3")' 2>/dev/null \
 	    && echo "$$r" && break; \
 	done)
 
 parity: build
-	@test -n "$(RUBY)" || { echo "make parity: no Ruby >= 3.2 found (tried: $(RUBY_CANDIDATES))"; exit 1; }
+	@test -n "$(RUBY)" || { echo "make parity: no Ruby >= 3.3 found (tried: $(RUBY_CANDIDATES))"; exit 1; }
 	$(RUBY) script/parity.rb
 
 hooks:
